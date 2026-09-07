@@ -1,5 +1,5 @@
 {
-  "SERVER_BASE_URL": "http://127.0.0.1:8000",
+  "SERVER_BASE_URL": "localhost:8000",
   "WEIGHT_FILE": "./models/yolo11s.pt",
   "MODEL_FILE_NAME": "./models/mars-small128.pb",
   "POSE_MODEL_PATH": "./models/yolo11s-pose.pt",
@@ -61,7 +61,7 @@
           "id": 1,
           "name": "NPT Perfume and PT impulse",
           "category": 12,
-          "rtsp_url": "rtsp://admin:Aurify@2025@192.168.1.120:554/cam/realmonitor?channel=1&subtype=0",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=9&subtype=0",
           "brand_id": 9,
           "category_name": "NPT Perfume and PT impulse",
           "detection_line": [
@@ -114,7 +114,7 @@
         {
           "id": 2,
           "name": "PT-Perfume-and-PT-impulse",
-          "rtsp_url":  "rtsp://admin:Aurify@2025@192.168.1.120:554/cam/realmonitor?channel=1&subtype=1",
+          "rtsp_url":  "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=10&subtype=0",
           "brand_id": 10,
           "category_name": "PT-Perfume-and-PT-impulse",
           "detection_line": [
@@ -151,7 +151,7 @@
         {
           "id": 3,
           "name": "Womens Akriti",
-          "rtsp_url":  "rtsp://admin:Aurify@2025@192.168.1.120:554/cam/realmonitor?channel=1&subtype=2",
+          "rtsp_url":  "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=18&subtype=0",
           "brand_id": 11,
           "category_name": "Womens Akriti",
           "detection_line": [
