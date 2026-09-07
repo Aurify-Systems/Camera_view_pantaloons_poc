@@ -1,0 +1,1294 @@
+{
+  "SERVER_BASE_URL": "http://127.0.0.1:8000",
+  "WEIGHT_FILE": "./models/yolo11s.pt",
+  "MODEL_FILE_NAME": "./models/mars-small128.pb",
+  "POSE_MODEL_PATH": "./models/yolo11s-pose.pt",
+  "REQUIRED_CLASSES": "person",
+  "RESOLUTION": [
+    960,
+    1080
+  ],
+  "SHOW_IMAGES": false,
+  "BATCH_THRESHOLD": 2,
+  "SKIP_FRAMES": 0,
+  "MAX_WORKERS": 2,
+  "IS_DELETE_IMAGE": false,
+  "POLL_INTERVAL": 1,
+  "START_TIME": "11:00",
+  "END_TIME": "21:59",
+  "STAFF_SEGREGATION": true,
+  "DATABASE": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "root",
+    "database": "master_database"
+  },
+  "capture": {
+    "output_directory": "./var/data/aurify_captures"
+  },
+  "fixture_missing": {
+    "pixel_threshold": 40,
+    "change_percentage_threshold": 10.0,
+    "min_changed_pixels": 1000,
+    "required_change_frames": 1,
+    "blur_kernel_size": [
+      5,
+      5
+    ],
+    "roi_source_resolution": [
+      960,
+      1080
+    ],
+    "baseline_directory": "./var/data/fixture",
+    "snapshot_directory": "./var/data/fixture_missing_snapshots",
+    "daily_check_time": "13:00",
+    "enabled": true,
+    "api_endpoint": "/storescript/api/fixture-missing-event",
+    "person_model": "./models/yolo11s.pt",
+    "person_confidence": 0.5,
+    "person_mask_padding": 10,
+    "rtsp_reconnect_delay_seconds": 5,
+    "poll_interval_seconds": 0.25,
+    "max_api_retries": 5,
+    "api_retry_delay_seconds": 5
+  },
+  "stores": {
+    "P234": {
+      "store_id": 1,
+      "gates": [
+        {
+          "id": 1,
+          "name": "NPT Perfume and PT impulse",
+          "category": 12,
+          "rtsp_url": "rtsp://admin:Aurify@2025@192.168.1.120:554/cam/realmonitor?channel=1&subtype=0",
+          "brand_id": 9,
+          "category_name": "NPT Perfume and PT impulse",
+          "detection_line": [
+            [
+              279,
+              439
+            ],
+            [
+              936,
+              519
+            ],
+            [
+              928,
+              1024
+            ],
+            [
+              239,
+              1031
+            ],
+            [
+              250,
+              877
+            ],
+            [
+              866,
+              924
+            ],
+            [
+              869,
+              571
+            ],
+            [
+              273,
+              497
+            ]
+          ],
+          "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[3, 476], [941, 596], [928, 920], [8, 785]],
+                  [[686, 103], [805, 145], [756, 488], [593, 471]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 2,
+          "name": "PT-Perfume-and-PT-impulse",
+          "rtsp_url":  "rtsp://admin:Aurify@2025@192.168.1.120:554/cam/realmonitor?channel=1&subtype=1",
+          "brand_id": 10,
+          "category_name": "PT-Perfume-and-PT-impulse",
+          "detection_line": [
+            [
+              342,
+              957
+            ],
+            [
+              927,
+              427
+            ],
+            [
+              955,
+              909
+            ],
+            [
+              481,
+              1031
+            ]
+          ],
+          "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[88, 713], [788, 230], [818, 575], [230, 1061]],
+                 [[450, 461], [931, 138], [945, 431], [498, 828]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "name": "Womens Akriti",
+          "rtsp_url":  "rtsp://admin:Aurify@2025@192.168.1.120:554/cam/realmonitor?channel=1&subtype=2",
+          "brand_id": 11,
+          "category_name": "Womens Akriti",
+          "detection_line": [
+            [
+              11,
+              459
+            ],
+            [
+              747,
+              188
+            ],
+            [
+              947,
+              456
+            ],
+            [
+              166,
+              748
+            ]
+          ],
+          "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[220, 498], [943, 360], [925, 1048], [231, 1021]],
+                   [[355, 196], [896, 121], [863, 611], [395, 630]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 4,
+          "name": "Womens Annabelle & ajile-1",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=19&subtype=0",
+          "brand_id": 12,
+          "category_name": "Womens Annabelle & ajile-1",
+          "detection_line": [
+            [37, 155],
+            [356, 95],
+            [786, 434],
+            [36, 642]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[10, 448], [540, 340], [761, 885], [10, 1035]],
+                  [[13, 190], [430, 136], [551, 425], [23, 568]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 5,
+          "name": "Womens Ajile-2",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=20&subtype=0",
+          "brand_id": 13,
+          "category_name": "Womens Ajile-2",
+          "detection_line": [
+            [332, 265],
+            [509, 205],
+            [952, 574],
+            [698, 1019],
+            [227, 1007],
+            [147, 713],
+            [411, 574],
+            [341, 413]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[15, 501], [728, 465], [723, 1040], [26, 1041]],
+                 [[348, 230], [766, 206], [883, 563], [408, 760]]
+                ]
+              }
+            ]
+          }
+        },
+       {
+          "id": 6,
+          "name": "Womens zink london, van huesen & honey curvytude",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=21&subtype=0",
+          "brand_id": 14,
+          "category_name": "Womens zink london, van huesen & honey curvytude",
+          "detection_line": [
+            [81, 311],
+            [351, 204],
+            [884, 730],
+            [180, 1077]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[195, 365], [791, 263], [911, 908], [255, 1011]],
+                  [[61, 288], [491, 230], [555, 713], [136, 875]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 7,
+          "name": "Womens Honey",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=22&subtype=0",
+          "brand_id": 15,
+          "category_name": "Womens Honey",
+          "detection_line": [
+            [103, 221],
+            [735, 214],
+            [925, 915],
+            [20, 908]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[423, 156], [881, 175], [933, 951], [360, 940]],
+                 [[31, 243], [560, 243], [498, 1008], [45, 1015]]
+                ]
+              }
+            ]
+          }
+        },
+          {
+          "id": 8,
+          "name": "Womens SF",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=23&subtype=0",
+          "brand_id": 16,
+          "category_name": "Womens SF",
+          "detection_line": [
+            [1, 235],
+            [134, 238],
+            [371, 369],
+            [346, 696],
+            [481, 719],
+            [574, 285],
+            [952, 388],
+            [944, 1074],
+            [5, 1075],
+            [2, 547]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[15, 280], [490, 331], [478, 1030], [11, 1036]],
+                  [[296, 106], [928, 131], [928, 675], [263, 648]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 9,
+          "name": "Womens Marigold & Akriti",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=24&subtype=0",
+          "brand_id": 17,
+          "category_name": "Womens Marigold & Akriti",
+          "detection_line": [
+            [43, 155],
+            [214, 148],
+            [279, 265],
+            [485, 255],
+            [947, 333],
+            [955, 1045],
+            [7, 1075],
+            [3, 520]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                   [[23, 373], [895, 345], [920, 1011], [46, 1031]],
+                   [[48, 131], [548, 135], [756, 576], [28, 620]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 10,
+          "name": "Womens Rangmanch-1",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=25&subtype=0",
+          "brand_id": 18,
+          "category_name": "Womens Rangmanch-1",
+          "detection_line": [
+            [380, 107],
+            [502, 140],
+            [454, 383],
+            [553, 451],
+            [585, 275],
+            [894, 327],
+            [928, 1072],
+            [18, 1053],
+            [9, 384],
+            [77, 265]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[18, 353], [698, 378], [693, 1030], [20, 1036]],
+                  [[328, 230], [816, 236], [926, 1025], [318, 1025]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 11,
+          "name": "Womens Rangmanch-2",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=26&subtype=0",
+          "brand_id": 19,
+          "category_name": "Womens Rangmanch-2",
+          "detection_line": [
+            [323, 99],
+            [641, 115],
+            [603, 375],
+            [743, 411],
+            [766, 220],
+            [958, 330],
+            [954, 1074],
+            [14, 1064],
+            [8, 386]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[18, 400], [916, 406], [903, 1045], [35, 1030]],
+                  [[366, 226], [945, 180], [941, 1026], [271, 1003]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 12,
+          "name": "Womens Ethnic Pop-Shop",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=27&subtype=0",
+          "brand_id": 20,
+          "category_name": "Womens Ethnic Pop-Shop",
+          "detection_line": [
+            [76, 224],
+            [251, 258],
+            [269, 605],
+            [387, 613],
+            [408, 280],
+            [499, 308],
+            [497, 636],
+            [653, 677],
+            [600, 1077],
+            [13, 1072]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[16, 185], [361, 190], [335, 651], [16, 730]],
+                  [[413, 125], [760, 123], [845, 748], [410, 625]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 13,
+          "name": "WOMENS DREAMS/LQ",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=28&subtype=0",
+          "brand_id": 21,
+          "category_name": "WOMENS DREAMS/LQ",
+          "detection_line": [
+            [152, 200],
+            [825, 379],
+            [663, 1074],
+            [6, 1072],
+            [2, 674],
+            [197, 500]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[16, 121], [441, 140], [455, 775], [11, 865]],
+                  [[558, 81], [935, 80], [948, 795], [385, 650]]
+                ]
+              }
+            ]
+          }
+        },
+          {
+          "id": 14,
+          "name": "Womens Rangmanch-3",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=29&subtype=0",
+          "brand_id": 22,
+          "category_name": "Womens Rangmanch-3",
+          "detection_line": [
+            [6, 830],
+            [655, 141],
+            [953, 308],
+            [886, 1070]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[23, 385], [910, 390], [946, 1023], [41, 1016]],
+                  [[421, 125], [938, 96], [933, 918], [306, 831]]
+                ]
+              }
+            ]
+          }
+        },
+          {
+          "id": 15,
+          "name": "Mens sf",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=1&subtype=0",
+          "brand_id": 23,
+          "category_name": "Mens sf",
+          "detection_line": [
+            [184, 291],
+            [762, 210],
+            [937, 470],
+            [917, 1067],
+            [335, 1069],
+            [259, 638]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                   [[33, 208], [593, 190], [628, 810], [40, 913]],
+                  [[388, 218], [876, 163], [865, 625], [253, 838]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 16,
+          "name": "Watch Counter 2",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.201:554/cam/realmonitor?channel=6&subtype=0",
+          "brand_id": 25,
+          "category_name": "Watch Counter 2",
+          "detection_line": [
+            [351, 125],
+            [685, 217],
+            [750, 502],
+            [280, 378]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[65, 473], [936, 570], [911, 961], [96, 861]],
+                  [[383, 143], [726, 181], [705, 560], [311, 483]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 17,
+          "name": "Womens vh & curvytude",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=5&subtype=0",
+          "brand_id": 26,
+          "category_name": "Womens vh & curvytude",
+          "detection_line": [
+            [278, 243],
+            [952, 340],
+            [955, 1074],
+            [12, 1047]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[403, 245], [946, 225], [901, 988], [238, 855]],
+                 [[233, 145], [641, 131], [675, 668], [218, 783]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 18,
+          "name": "Kids Boys 2-8 & 8-16",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=6&subtype=0",
+          "brand_id": 27,
+          "category_name": "Kids Boys 2-8 & 8-16",
+          "detection_line": [
+            [519, 211],
+            [635, 240],
+            [692, 116],
+            [905, 189],
+            [928, 1066],
+            [20, 1074],
+            [5, 600],
+            [357, 512]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[3, 490], [931, 496], [931, 1001], [21, 1048]],
+                 [[340, 166], [918, 168], [905, 881], [383, 795]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 19,
+          "name": "Mens Peregrine-1",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=7&subtype=0",
+          "brand_id": 28,
+          "category_name": "Mens Peregrine-1",
+          "detection_line": [
+            [7, 1073],
+            [952, 1073],
+            [950, 173],
+            [649, 138],
+            [513, 695],
+            [210, 439],
+            [3, 503],
+            [10, 765]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[8, 335], [761, 363], [710, 1043], [6, 1048]],
+                 [[535, 221], [915, 206], [950, 923], [350, 871]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 20,
+          "name": "Womens Spykar",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=8&subtype=0",
+          "brand_id": 29,
+          "category_name": "Womens Spykar",
+          "detection_line": [
+            [501, 227],
+            [694, 283],
+            [714, 109],
+            [895, 155],
+            [927, 1070],
+            [12, 1067],
+            [1, 419],
+            [166, 399],
+            [300, 610],
+            [440, 433]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[15, 323], [718, 288], [728, 1041], [33, 1056]],
+                 [[335, 236], [940, 200], [921, 978], [301, 878]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 21,
+          "name": "Cosmetic counter",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=9&subtype=0",
+          "brand_id": 30,
+          "category_name": "Cosmetic counter",
+          "detection_line": [
+            [279, 227],
+            [769, 144],
+            [901, 1072],
+            [163, 1071]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[221, 188], [860, 116], [920, 975], [126, 998]],
+                 [[41, 290], [745, 110], [901, 843], [110, 985]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 22,
+          "name": "MENS SPYKAR/LEVIS",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=10&subtype=0",
+          "brand_id": 31,
+          "category_name": "MENS SPYKAR/LEVIS",
+          "detection_line": [
+            [632, 205],
+            [949, 273],
+            [942, 1073],
+            [9, 1070],
+            [3, 231],
+            [264, 278],
+            [419, 254],
+            [550, 346],
+            [618, 363],
+            [645, 292]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[11, 228], [693, 226], [668, 1003], [28, 1011]],
+                 [[275, 153], [900, 143], [921, 950], [183, 958]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 23,
+          "name": "Mens LP sport& LP formal",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=13&subtype=0",
+          "brand_id": 32,
+          "category_name": "Mens LP sport& LP formal",
+          "detection_line": [
+            [397, 54],
+            [942, 121],
+            [942, 1073],
+            [4, 1058]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[8, 131], [703, 180], [596, 971], [18, 858]],
+                  [[478, 120], [860, 121], [898, 1018], [266, 823]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 24,
+          "name": "Womens aurelia",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=14&subtype=0",
+          "brand_id": 33,
+          "category_name": "Womens aurelia",
+          "detection_line": [
+            [534, 289],
+            [951, 437],
+            [949, 1074],
+            [7, 1070],
+            [11, 550],
+            [327, 384]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[5, 225], [646, 263], [690, 1011], [45, 1043]],
+                 [[450, 268], [933, 233], [950, 1011], [228, 958]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 25,
+          "name": "Lingerie",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=18&subtype=0",
+          "brand_id": 34,
+          "category_name": "Lingerie",
+          "detection_line": [
+            [17, 380],
+            [708, 273],
+            [956, 991],
+            [112, 1075]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[40, 321], [625, 286], [671, 1038], [16, 1051]],
+                 [[270, 203], [798, 180], [738, 683], [153, 751]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 26,
+          "name": "Womens LQ",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=19&subtype=0",
+          "brand_id": 35,
+          "category_name": "Womens LQ",
+          "detection_line": [
+            [1, 495],
+            [433, 413],
+            [920, 1073],
+            [2, 1074]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[3, 338], [686, 301], [746, 986], [40, 1051]],
+                  [[453, 235], [956, 173], [941, 991], [416, 978]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 27,
+          "name": "Kids Girls 8-16",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=21&subtype=0",
+          "brand_id": 37,
+          "category_name": "Kids Girls 8-16",
+          "detection_line": [
+            [21, 165],
+            [205, 101],
+            [950, 921],
+            [13, 1076]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[18, 281], [481, 251], [483, 953], [1, 1016]],
+                   [[293, 216], [933, 158], [945, 901], [280, 1018]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 28,
+          "name": "Womens Handbag & Jewelley",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=22&subtype=0",
+          "brand_id": 38,
+          "category_name": "Womens Handbag & Jewelley",
+          "detection_line": [
+            [335, 21],
+            [734, 259],
+            [946, 597],
+            [879, 1069],
+            [7, 1050],
+            [17, 173]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[15, 145], [651, 100], [653, 800], [121, 766]],
+                   [[230, 153], [753, 125], [943, 896], [303, 928]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 29,
+          "name": "GO COLOR/RANGMANCH-4",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=23&subtype=0",
+          "brand_id": 39,
+          "category_name": "GO COLOR/RANGMANCH-4",
+          "detection_line": [
+            [28, 206],
+            [404, 190],
+            [948, 975],
+            [30, 1064]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[38, 220], [531, 208], [548, 970], [11, 1020]],
+                  [[266, 266], [945, 228], [910, 996], [213, 1018]]
+                ]
+              }
+            ]
+          }
+        },
+       {
+          "id": 30,
+          "name": "Womens Footwear",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=24&subtype=0",
+          "brand_id": 40,
+          "category_name": "Womens Footwear",
+          "detection_line": [
+            [364, 325],
+            [647, 567],
+            [538, 897],
+            [664, 1071],
+            [6, 1066],
+            [8, 547]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[13, 291], [675, 263], [728, 1023], [11, 1051]],
+                  [[246, 245], [876, 290], [816, 948], [181, 890]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 31,
+          "name": "Mens Peregrine-2 & allen solly",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=27&subtype=0",
+          "brand_id": 43,
+          "category_name": "Mens Peregrine-2 & allen solly",
+          "detection_line": [
+            [599, 212],
+            [677, 320],
+            [350, 381],
+            [394, 848],
+            [620, 750],
+            [568, 552],
+            [732, 482],
+            [950, 946],
+            [9, 1076],
+            [7, 276],
+            [232, 249],
+            [405, 223]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[0, 170], [640, 165], [601, 985], [31, 1003]],
+                 [[211, 211], [741, 160], [901, 996], [301, 1036]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 32,
+          "name": "Mens peregrine -3",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=28&subtype=0",
+          "brand_id": 44,
+          "category_name": "Mens peregrine -3",
+          "detection_line": [
+            [2, 500],
+            [574, 206],
+            [949, 524],
+            [933, 1063],
+            [35, 1071],
+            [8, 700]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                   [[21, 283], [638, 135], [620, 961], [63, 1026]],
+                   [[316, 238], [905, 206], [908, 1005], [305, 961]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 33,
+          "name": "Kids Footwear",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=8&subtype=0",
+          "brand_id": 46,
+          "category_name": "Kids Footwear",
+          "detection_line": [
+            [217, 151],
+            [363, 130],
+            [499, 460],
+            [237, 518]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                   [[21, 483], [881, 385], [941, 988], [70, 1036]],
+                   [[23, 108], [471, 78], [546, 406], [26, 463]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 34,
+          "name": "Mens wrogn & indusroute",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=10&subtype=0",
+          "brand_id": 47,
+          "category_name": "Mens wrogn & indusroute",
+          "detection_line": [
+            [528, 374],
+            [661, 348],
+            [632, 106],
+            [829, 99],
+            [954, 1060],
+            [17, 1066],
+            [122, 173],
+            [443, 77]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                   [[8, 183], [485, 111], [551, 788], [28, 1030]],
+                  [[268, 238], [930, 140], [940, 985], [265, 1025]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 35,
+          "name": "Mens Peter england formal - 1",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=11&subtype=0",
+          "brand_id": 48,
+          "category_name": "Mens Peter england formal - 1",
+          "detection_line": [
+            [946, 14],
+            [945, 1064],
+            [10, 1063],
+            [17, 328]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                   [[31, 276], [666, 178], [661, 915], [36, 1063]],
+                 [[240, 146], [920, 50], [936, 896], [310, 923]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 36,
+          "name": "Womens Handbag Section",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=14&subtype=0",
+          "brand_id": 50,
+          "category_name": "Womens Handbag Section",
+          "detection_line": [
+            [144, 737],
+            [815, 417],
+            [953, 651],
+            [955, 1074],
+            [202, 1074],
+            [180, 897]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[131, 646], [836, 446], [941, 1021], [208, 1045]],
+                   [[285, 256], [811, 208], [943, 918], [335, 951]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 37,
+          "name": "Mens Peter england formal -2 & UCB",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=15&subtype=0",
+          "brand_id": 51,
+          "category_name": "Mens Peter england formal -2 & UCB",
+          "detection_line": [
+            [524, 195],
+            [934, 254],
+            [925, 1072],
+            [7, 1071],
+            [5, 649],
+            [201, 606],
+            [427, 706],
+            [489, 375]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[5, 241], [630, 205], [661, 981], [31, 1045]],
+                  [[430, 205], [903, 143], [933, 953], [413, 1001]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 38,
+          "name": "Mens ajile -2 & Street 808",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=20&subtype=0",
+          "brand_id": 53,
+          "category_name": "Mens ajile -2 & Street 808",
+          "detection_line": [
+            [2, 498],
+            [557, 98],
+            [929, 206],
+            [925, 586],
+            [931, 1071],
+            [12, 1064]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                 [[26, 196], [666, 171], [616, 985], [40, 1008]],
+                   [[243, 160], [786, 165], [778, 901], [120, 895]]
+                ]
+              }
+            ]
+          }
+        },
+          {
+          "id": 39,
+          "name": "Kids Girls 2-8 & Infants",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=24&subtype=0",
+          "brand_id": 56,
+          "category_name": "Kids Girls 2-8 & Infants",
+          "detection_line": [
+            [2, 133],
+            [766, 132],
+            [944, 450],
+            [949, 1072],
+            [82, 1073],
+            [8, 487]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[20, 120], [751, 75], [736, 511], [43, 688]],
+                   [[295, 116], [810, 68], [925, 905], [305, 1006]]
+                ]
+              }
+            ]
+          }
+        },
+          {
+          "id": 40,
+          "name": "KIDS GIRLS 8-16",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=25&subtype=0",
+          "brand_id": 57,
+          "category_name": "KIDS GIRLS 8-16",
+          "detection_line": [
+            [344, 213],
+            [673, 210],
+            [679, 341],
+            [767, 345],
+            [757, 217],
+            [943, 237],
+            [939, 568],
+            [358, 567]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[315, 170], [938, 136], [925, 888], [368, 975]],
+                  [[41, 210], [606, 181], [585, 773], [83, 776]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 41,
+          "name": "Mens Footware & vh innerwear",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=26&subtype=0",
+          "brand_id": 58,
+          "category_name": "Mens Footware & vh innerwear",
+          "detection_line": [
+            [212, 206],
+            [413, 318],
+            [569, 134],
+            [941, 276],
+            [934, 1069],
+            [16, 1066]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[33, 275], [636, 266], [608, 1030], [46, 993]],
+                  [[133, 276], [895, 155], [893, 995], [188, 993]]
+                ]
+              }
+            ]
+          }
+        },
+         {
+          "id": 42,
+          "name": "Mens Street 808",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.203:554/cam/realmonitor?channel=28&subtype=0",
+          "brand_id": 59,
+          "category_name": "Mens Street 808",
+          "detection_line": [
+            [9, 496],
+            [616, 169],
+            [692, 232],
+            [610, 409],
+            [712, 507],
+            [825, 316],
+            [952, 380],
+            [935, 1071],
+            [12, 1072],
+            [11, 685]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                  [[55, 331], [708, 158], [715, 885], [110, 988]],
+                   [[181, 265], [930, 125], [816, 903], [150, 935]]
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 43,
+          "name": "Watch Counter",
+          "rtsp_url": "rtsp://admin:imcc%40261204@10.205.58.202:554/cam/realmonitor?channel=4&subtype=0",
+          "brand_id": 60,
+          "category_name": "Watch Counter",
+          "detection_line": [
+            [9, 496],
+            [616, 169],
+            [692, 232],
+            [610, 409],
+            [712, 507],
+            [825, 316],
+            [952, 380],
+            [935, 1071],
+            [12, 1072],
+            [11, 685]
+          ],
+           "fixture_missing": {
+            "enabled": true,
+            "regions": [
+              {
+                "id": "fixture_region_1",
+                "polygon": [
+                   [[501, 220], [896, 180], [901, 730], [530, 730]],
+                  [[8, 193], [326, 165], [370, 731], [36, 693]]
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
