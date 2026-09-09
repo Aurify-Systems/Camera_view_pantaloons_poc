@@ -1998,7 +1998,7 @@ def process_camera(
     daily_check_time = (
         global_fixture.get(
             "daily_check_time",
-            "11:20",
+            "13:00",
         )
     )
 
