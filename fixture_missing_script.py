@@ -1,2866 +1,1290 @@
 """
-features/fixture_missing.py
-===========================
+fixture_missing.py
+==================
 
-FIXTURE / CAMERA ANGLE CHANGE DETECTION
+FIXTURE / CAMERA ANGLE CHANGE DETECTION  (v2 - polygon ROI aware)
+==================================================================
 
-Supported detection:
---------------------
-1. Camera moves LEFT
-2. Camera moves RIGHT
-3. Camera moves UP
-4. Camera moves DOWN
-5. Camera ZOOM IN
-6. Camera ZOOM OUT
-7. Camera ROTATION / TILT
-8. Camera BLUR / DEFOCUS
-9. Camera BLACK / BLANK FIELD
+WHAT CHANGED FROM v1
+---------------------
+1. The "object area to ignore" is no longer a fixed border percentage.
+   It is now built from the polygon(s) you already have in your
+   config, under each camera's:
 
-The following should NOT trigger:
----------------------------------
-- Person movement
-- Product movement
-- Object movement
-- Normal/stable scene changes
+        camera["fixture_missing"]["regions"][i]["polygon"]
 
-ROI behavior:
--------------
-roi_mode = "monitor"
-    Compare INSIDE configured polygon(s).
+   Every polygon listed for a camera is unioned together into one
+   ROI mask. Everything OUTSIDE that ROI is "background" and is the
+   only area used for camera-angle detection. Everything INSIDE the
+   ROI (your shelf/fixture area) is completely ignored, exactly like
+   before - person/product/fixture changes inside it never trigger
+   an alert.
 
-roi_mode = "ignore"
-    Ignore configured polygon(s) and compare outside them.
+2. The polygons are scaled from `fixture_missing.roi_source_resolution`
+   (the resolution they were drawn against) to whatever resolution the
+   RTSP stream actually delivers, so you do not have to redraw them if
+   the two differ.
 
-IMPORTANT:
-----------
-For your Gate 28, where the entire frame is one ROI, use:
+3. Thresholds are now read using the key names that are actually in
+   your JSON (`pixel_threshold`, `change_percentage_threshold`,
+   `blur_kernel_size`, ...), with sensible fallbacks/aliases and
+   defaults for the extra knobs this version adds (see
+   `CONFIG KEYS` section below).
 
-    "roi_mode": "monitor"
+4. The result now includes a `movement_type` field:
+   one of "left", "right", "up", "down", "tilt", "zoom", "blur",
+   "camera_change" (generic/mixed) or "none". `status`/`alert`
+   still collapse this to the same YES/NO you had before -
+   nothing downstream needs to change unless you want the extra
+   detail.
 
-This fixes the previous problem where a full-frame ROI was inverted
-and resulted in ZERO comparison pixels.
+EVERYTHING ELSE (RTSP capture loop, daily-check-once-per-day logic,
+original/current image lifecycle, API posting/retry logic) is
+UNCHANGED from your v1 script.
+
+
+CONFIG KEYS
+===========
+
+Read from `config["fixture_missing"]` (global) and merged with the
+matching per-camera `camera["fixture_missing"]` block. Your current
+JSON already has most of these - the ones marked (NEW, optional) do
+not exist in your file yet; if you don't add them, the defaults shown
+are used.
+
+    pixel_threshold                          (you have: 40)
+        Per-pixel grayscale difference (0-255) above which a pixel
+        counts as "changed".
+
+    change_percentage_threshold              (you have: 5.0)
+        % of background pixels that must have changed for a camera
+        change to even be considered (the "global" check).
+
+    blur_kernel_size                         (you have: [5, 5])
+        Gaussian blur kernel applied before differencing, to remove
+        compression/sensor noise. Only the first number is used and
+        it is forced odd.
+
+    roi_source_resolution                    (you have: [960, 1080])
+        The [width, height] your polygons were drawn against. Points
+        are rescaled to the live frame size using this as reference.
+
+    daily_check_time, baseline_directory, snapshot_directory,
+    api_endpoint, rtsp_reconnect_delay_seconds, poll_interval_seconds,
+    max_api_retries, api_retry_delay_seconds, enabled
+        Unchanged - same meaning as before.
+
+    camera_angle_region_change_percentage    (NEW, optional, default 8.0)
+        % change required inside one background region (top/bottom/
+        left/right/corner) for that region to count as "changed".
+
+    camera_angle_required_changed_regions    (NEW, optional, default 3)
+        How many of the 8 background regions must be "changed"
+        before we call it a real camera move (this is what stops a
+        single person walking past the edge of frame from alerting -
+        that only touches one region).
+
+    camera_angle_minimum_background_coverage (NEW, optional, default 50.0)
+        Of all CHANGED background pixels, what % spread (coverage of
+        the background area) is required.
+
+    camera_direction_bias_ratio              (NEW, optional, default 1.6)
+        How much more one side must change than its opposite side
+        before we call the movement "left"/"right"/"up"/"down"
+        instead of a generic/tilt change.
+
+    camera_blur_variance_drop_ratio          (NEW, optional, default 0.5)
+        If the current image's background sharpness (Laplacian
+        variance) drops below this fraction of the original's, it is
+        reported as a blur/defocus event.
+
+    camera_blur_minimum_original_variance    (NEW, optional, default 40.0)
+        Skip the blur check if the ORIGINAL background was already
+        this blurry (avoids false positives on inherently soft feeds).
+
+    roi_margin_percent                       (NEW, optional, default 0.0)
+        Extra pixels (as % of width/height) grown outward from your
+        polygon before treating it as "ignore area". Use a small
+        value (e.g. 0.01-0.02) if products/people right at the edge
+        of your ROI are leaking a few pixels into the background and
+        causing noise.
+
+
+IMAGE NAMING
+============
+    original_YYYYMMDD_HHMMSS.jpg   (created once, permanent)
+    current_YYYYMMDD_HHMMSS.jpg    (created once per day)
 """
 
-import os
-import cv2
 import json
-import time
-import glob
 import logging
+import os
+import re
 import threading
+import time
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import requests
 
 
-# ============================================================================
-# LOGGER
-# ============================================================================
+# ================================================================
+# PATHS / LOGGING
+# ================================================================
 
-logger = logging.getLogger(__name__)
+BASE_DIR = Path(__file__).resolve().parent
 
-if not logger.handlers:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+# Allow overriding via environment variable so you don't have to keep
+# renaming files back and forth. Falls back to the two names people
+# commonly end up with.
+_CONFIG_CANDIDATES = [
+    os.environ.get("FIXTURE_CONFIG_FILE"),
+    "storescript_config copy.json",
+    "storescript_config.json",
+]
+
+CONFIG_FILE = None
+for _candidate in _CONFIG_CANDIDATES:
+    if not _candidate:
+        continue
+    _path = Path(_candidate)
+    if not _path.is_absolute():
+        _path = BASE_DIR / _path
+    if _path.exists():
+        CONFIG_FILE = _path
+        break
+
+if CONFIG_FILE is None:
+    # Keep old default so the error message is familiar if nothing exists.
+    CONFIG_FILE = BASE_DIR / "storescript_config copy.json"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+logger = logging.getLogger("fixture_missing")
+
+
+# ================================================================
+# GLOBAL STATE
+# ================================================================
+
+CAMERA_LOCKS: Dict[Tuple[str, str], threading.Lock] = {}
+CAMERA_LOCKS_GUARD = threading.Lock()
+
+
+# ================================================================
+# CONFIG
+# ================================================================
+
+def load_config() -> dict:
+    if not CONFIG_FILE.exists():
+        raise FileNotFoundError(f"Configuration file not found: {CONFIG_FILE}")
+    with CONFIG_FILE.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def resolve_path(value: str, default: str) -> Path:
+    raw = value or default
+    path = Path(raw)
+    if not path.is_absolute():
+        path = (BASE_DIR / path).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_setting(settings: dict, *names: str, default: Any = None, cast=None) -> Any:
+    """
+    Look up the first key (in order) that exists in `settings`.
+    Lets us support both the key names already in your JSON and any
+    new/renamed keys, without breaking either.
+    """
+    for name in names:
+        if name in settings and settings[name] is not None:
+            value = settings[name]
+            return cast(value) if cast else value
+    return default
+
+
+# ================================================================
+# NAME / DIRECTORY HELPERS
+# ================================================================
+
+def safe_name(value: Any) -> str:
+    return re.sub(r"[^a-zA-Z0-9\-_]", "_", str(value or "UNKNOWN"))
+
+
+def timestamp_for_filename(now: Optional[datetime] = None) -> str:
+    now = now or datetime.now()
+    return now.strftime("%Y%m%d_%H%M%S")
+
+
+def camera_directory(
+    root: Path,
+    store_id: Any,
+    camera_category_name: str,
+    camera_name: str,
+) -> Path:
+    path = root / safe_name(store_id) / safe_name(camera_category_name) / safe_name(camera_name)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def marker_path(camera_dir: Path, date_compact: str) -> Path:
+    return camera_dir / (f".fixture_checked_{date_compact}")
+
+
+# ================================================================
+# IMAGE PATH HELPERS
+# ================================================================
+
+def find_original_image(camera_dir: Path) -> Optional[Path]:
+    originals = sorted(camera_dir.glob("original_*.jpg"), key=lambda p: p.stat().st_mtime)
+    return originals[0] if originals else None
+
+
+def find_current_image_for_date(camera_dir: Path, date_compact: str) -> Optional[Path]:
+    currents = sorted(
+        camera_dir.glob(f"current_{date_compact}_*.jpg"),
+        key=lambda p: p.stat().st_mtime,
     )
+    return currents[0] if currents else None
 
 
-# ============================================================================
-# DEFAULT SETTINGS
-# ============================================================================
+# ================================================================
+# CAMERA LOCK
+# ================================================================
 
-DEFAULT_SETTINGS = {
-    # ----------------------------------------------------------------------
-    # Camera movement
-    # ----------------------------------------------------------------------
-    "pixel_comparison_threshold": 20.0,
-
-    "camera_angle_pixel_change_percentage": 5.0,
-
-    # Lower than old 50%.
-    # Real camera movements do not necessarily change 50% of the image.
-    "camera_angle_minimum_background_coverage": 15.0,
-
-    # Regional values are mainly used for direction classification.
-    "camera_angle_region_change_percentage": 5.0,
-
-    # Do not require 3+ regions to change.
-    "camera_angle_required_changed_regions": 2,
-
-    # ----------------------------------------------------------------------
-    # Blur
-    # ----------------------------------------------------------------------
-    "camera_blur_enabled": True,
-
-    "camera_blur_original_min_variance": 40.0,
-
-    "camera_blur_current_ratio_threshold": 0.50,
-
-    # ----------------------------------------------------------------------
-    # Black / blank frame
-    # ----------------------------------------------------------------------
-    "black_field_detection_enabled": True,
-
-    "black_field_pixel_threshold": 15.0,
-
-    "black_field_dark_percentage": 90.0,
-
-    # ----------------------------------------------------------------------
-    # Direction classification
-    # ----------------------------------------------------------------------
-    "camera_direction_bias_ratio": 1.60,
-
-    "camera_diagonal_bias_ratio": 1.15,
-
-    "camera_zoom_balance_ratio": 1.30,
-
-    # ----------------------------------------------------------------------
-    # Processing
-    # ----------------------------------------------------------------------
-    "gaussian_blur_kernel": [5, 5],
-
-    "morphology_kernel_size": 3,
-
-    # ----------------------------------------------------------------------
-    # Daily fixture check
-    # ----------------------------------------------------------------------
-    "check_time": "13:00",
-
-    # ----------------------------------------------------------------------
-    # Paths
-    # ----------------------------------------------------------------------
-    "fixture_baseline_root": "./var/data/fixture",
-
-    "fixture_snapshot_root": "./var/data/fixture_missing_snapshots",
-
-    # ----------------------------------------------------------------------
-    # ROI
-    # ----------------------------------------------------------------------
-    "roi_mode": "monitor",
-
-    "roi_source_resolution": [960, 1080],
-
-    # ----------------------------------------------------------------------
-    # API
-    # ----------------------------------------------------------------------
-    "api_timeout": 30,
-
-    # ----------------------------------------------------------------------
-    # Working resolution
-    # ----------------------------------------------------------------------
-    "working_width": 960,
-
-    "working_height": 1080,
-}
+def get_camera_lock(camera_no: int, date_compact: str) -> threading.Lock:
+    key = (str(camera_no), date_compact)
+    with CAMERA_LOCKS_GUARD:
+        if key not in CAMERA_LOCKS:
+            CAMERA_LOCKS[key] = threading.Lock()
+        return CAMERA_LOCKS[key]
 
 
-# ============================================================================
-# CONFIGURATION HELPERS
-# ============================================================================
+# ================================================================
+# ROI (polygon) HANDLING  -- NEW
+# ================================================================
 
-def get_setting(settings, key, default=None, cast=None):
+def extract_polygons_from_camera_config(camera_fixture: dict) -> List[List[Tuple[int, int]]]:
     """
-    Get a configuration value safely.
+    Pulls every polygon out of:
+        camera["fixture_missing"]["regions"][i]["polygon"]
+
+    Your JSON has, per region, a LIST of polygons (usually 2 - looks
+    like an outer + inner boundary of the same shelf). All of them are
+    collected and unioned into one ignore-mask.
     """
-    value = settings.get(key, default)
+    polygons: List[List[Tuple[int, int]]] = []
 
-    if cast is not None:
-        try:
-            return cast(value)
-        except Exception:
-            return default
-
-    return value
-
-
-def load_json_file(path):
-    """
-    Load JSON configuration.
-    """
-    with open(path, "r", encoding="utf-8") as file:
-        return json.load(file)
-
-
-def find_config_file():
-    """
-    Find storescript configuration.
-    """
-
-    candidates = [
-        os.getenv("FIXTURE_CONFIG_FILE"),
-        "./config/storescript_config copy.json",
-        "./config/storescript_config.json",
-        "./storescript_config.json",
-    ]
-
-    for path in candidates:
-        if path and os.path.exists(path):
-            logger.info("[Fixture] Using config: %s", path)
-            return path
-
-    raise FileNotFoundError(
-        "Could not find storescript configuration file."
-    )
-
-
-def load_config():
-    """
-    Load application configuration.
-    """
-
-    config_path = find_config_file()
-    config = load_json_file(config_path)
-
-    return config
-
-
-# ============================================================================
-# SETTINGS MERGE
-# ============================================================================
-
-def get_camera_fixture_settings(camera, config):
-    """
-    Merge global fixture_missing settings with camera-specific settings.
-    """
-
-    global_fixture = config.get("fixture_missing", {}) or {}
-
-    camera_fixture = camera.get("fixture_missing", {}) or {}
-
-    settings = dict(DEFAULT_SETTINGS)
-
-    # Global settings
-    for key, value in global_fixture.items():
-        if key != "regions":
-            settings[key] = value
-
-    # Camera settings
-    for key, value in camera_fixture.items():
-        if key != "regions":
-            settings[key] = value
-
-    return settings
-
-
-# ============================================================================
-# ROI FUNCTIONS
-# ============================================================================
-
-def extract_polygons_from_camera_config(camera_fixture):
-    """
-    Read polygons from:
-
-        camera["fixture_missing"]["regions"]
-
-    Supports:
-
-        "polygon": [[x,y], [x,y], ...]
-
-    and:
-
-        "polygon": [
-            [[x,y], [x,y], ...],
-            [[x,y], [x,y], ...]
-        ]
-    """
-
-    regions = camera_fixture.get("regions", []) or []
-
-    polygons = []
-
-    for region in regions:
-
-        if not isinstance(region, dict):
+    for region in camera_fixture.get("regions", []) or []:
+        polygon_entry = region.get("polygon")
+        if not polygon_entry:
             continue
 
-        polygon = region.get("polygon")
+        # polygon_entry can be:
+        #   [[x,y], [x,y], ...]                     -> a single polygon
+        #   [ [[x,y],...], [[x,y],...] ]             -> multiple polygons (your case)
+        if polygon_entry and isinstance(polygon_entry[0][0], (int, float)):
+            candidate_polygons = [polygon_entry]
+        else:
+            candidate_polygons = polygon_entry
 
-        if not polygon:
-            continue
-
-        # Single polygon:
-        # [[x,y], [x,y], ...]
-        if (
-            isinstance(polygon, list)
-            and len(polygon) > 0
-            and isinstance(polygon[0], (list, tuple))
-            and len(polygon[0]) >= 2
-            and isinstance(polygon[0][0], (int, float))
-        ):
-            polygons.append(polygon)
-            continue
-
-        # Multiple polygons:
-        # [
-        #   [[x,y], ...],
-        #   [[x,y], ...]
-        # ]
-        if isinstance(polygon, list):
-
-            for item in polygon:
-
-                if (
-                    isinstance(item, list)
-                    and len(item) >= 3
-                    and isinstance(item[0], (list, tuple))
-                ):
-                    polygons.append(item)
+        for poly in candidate_polygons:
+            points = [(int(pt[0]), int(pt[1])) for pt in poly]
+            if len(points) >= 3:
+                polygons.append(points)
 
     return polygons
 
 
 def scale_polygons(
-    polygons,
-    source_resolution,
-    target_width,
-    target_height
-):
+    polygons: List[List[Tuple[int, int]]],
+    source_resolution: Tuple[int, int],
+    target_size: Tuple[int, int],
+) -> List[np.ndarray]:
     """
-    Scale polygon coordinates from source resolution
-    to target frame resolution.
+    Rescale polygon points drawn against `source_resolution` (w, h) so
+    they line up with `target_size` (w, h) - the actual frame size.
     """
+    source_w, source_h = source_resolution
+    target_w, target_h = target_size
 
-    if not polygons:
-        return []
-
-    try:
-        source_width = float(source_resolution[0])
-        source_height = float(source_resolution[1])
-
-        if source_width <= 0 or source_height <= 0:
-            raise ValueError
-
-    except Exception:
-        logger.warning(
-            "[Fixture ROI] Invalid source resolution %s. "
-            "Using target frame resolution.",
-            source_resolution
-        )
-
-        source_width = float(target_width)
-        source_height = float(target_height)
-
-    scale_x = target_width / source_width
-    scale_y = target_height / source_height
+    if source_w <= 0 or source_h <= 0:
+        scale_x, scale_y = 1.0, 1.0
+    else:
+        scale_x = target_w / float(source_w)
+        scale_y = target_h / float(source_h)
 
     scaled = []
-
-    for polygon in polygons:
-
-        points = []
-
-        for point in polygon:
-
-            if len(point) < 2:
-                continue
-
-            x = int(round(float(point[0]) * scale_x))
-            y = int(round(float(point[1]) * scale_y))
-
-            x = max(0, min(target_width - 1, x))
-            y = max(0, min(target_height - 1, y))
-
-            points.append([x, y])
-
-        if len(points) >= 3:
-            scaled.append(np.array(points, dtype=np.int32))
-
+    for poly in polygons:
+        pts = np.array(
+            [[int(round(x * scale_x)), int(round(y * scale_y))] for x, y in poly],
+            dtype=np.int32,
+        )
+        scaled.append(pts)
     return scaled
 
 
 def build_roi_mask(
-    polygons,
-    width,
-    height
-):
+    shape: Tuple[int, int],
+    polygons: List[List[Tuple[int, int]]],
+    roi_source_resolution: Tuple[int, int],
+    margin_percent: float = 0.0,
+) -> Optional[np.ndarray]:
     """
-    Build mask from polygons.
-
-    White = selected ROI.
+    Build a filled mask (255 = inside ROI / ignore area) for the given
+    frame `shape` (height, width), from the raw polygon points.
+    Returns None if there are no polygons (caller should fall back to
+    a plain border mask in that case).
     """
-
     if not polygons:
         return None
 
-    mask = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
+    height, width = shape[:2]
+    scaled_polygons = scale_polygons(polygons, roi_source_resolution, (width, height))
 
-    for polygon in polygons:
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for poly in scaled_polygons:
+        cv2.fillPoly(mask, [poly], 255)
 
-        if polygon is None or len(polygon) < 3:
-            continue
-
-        cv2.fillPoly(
-            mask,
-            [polygon],
-            255
-        )
+    if margin_percent and margin_percent > 0:
+        grow_x = max(1, int(width * margin_percent))
+        grow_y = max(1, int(height * margin_percent))
+        kernel = np.ones((grow_y * 2 + 1, grow_x * 2 + 1), dtype=np.uint8)
+        mask = cv2.dilate(mask, kernel)
 
     return mask
 
 
-def create_comparison_mask(
-    roi_mask,
-    width,
-    height,
-    settings
-):
-    """
-    Create the actual comparison mask.
-
-    roi_mode = monitor:
-        Compare INSIDE ROI.
-
-    roi_mode = ignore:
-        Compare OUTSIDE ROI.
-
-    If there is no ROI:
-        compare the complete frame.
-    """
-
-    if roi_mask is None:
-
-        logger.info(
-            "[Fixture ROI] No polygon configured. "
-            "Using full frame."
-        )
-
-        return np.ones(
-            (height, width),
-            dtype=np.uint8
-        ) * 255
-
-    roi_mode = str(
-        get_setting(
-            settings,
-            "roi_mode",
-            "monitor"
-        )
-    ).strip().lower()
-
-    roi_pixels = int(
-        np.count_nonzero(roi_mask)
-    )
-
-    total_pixels = width * height
-
-    logger.info(
-        "[Fixture ROI] roi_mode=%s | roi_pixels=%d | "
-        "total_pixels=%d | coverage=%.2f%%",
-        roi_mode,
-        roi_pixels,
-        total_pixels,
-        (roi_pixels / total_pixels) * 100.0
-        if total_pixels else 0.0
-    )
-
-    if roi_mode == "ignore":
-
-        comparison_mask = cv2.bitwise_not(
-            roi_mask
-        )
-
-    else:
-        # IMPORTANT:
-        # Full-frame ROI must remain full-frame comparison area.
-        comparison_mask = roi_mask.copy()
-
-    comparison_pixels = int(
-        np.count_nonzero(comparison_mask)
-    )
-
-    logger.info(
-        "[Fixture ROI] comparison_pixels=%d | "
-        "comparison_coverage=%.2f%%",
-        comparison_pixels,
-        (comparison_pixels / total_pixels) * 100.0
-        if total_pixels else 0.0
-    )
-
-    return comparison_mask
+def resize_mask_like(mask: np.ndarray, target_shape: Tuple[int, int]) -> np.ndarray:
+    target_h, target_w = target_shape[:2]
+    if mask.shape[0] == target_h and mask.shape[1] == target_w:
+        return mask
+    resized = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    return resized
 
 
-# ============================================================================
-# IMAGE PREPROCESSING
-# ============================================================================
+# ================================================================
+# IMAGE RESIZE
+# ================================================================
 
-def resize_image(image, width, height):
-    """
-    Resize image to working resolution.
-    """
+def resize_same_size(
+    original: np.ndarray,
+    current: np.ndarray,
+    settings: dict,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    if original is None:
+        raise ValueError("Original image is required")
+    if current is None:
+        raise ValueError("Current image is required")
 
+    max_width = int(get_setting(settings, "pixel_comparison_max_width", default=960, cast=int))
+
+    original_height, original_width = original.shape[:2]
+
+    scale = 1.0
+    if max_width > 0 and original_width > max_width:
+        scale = max_width / original_width
+        new_width = max_width
+        new_height = int(original_height * scale)
+        original = cv2.resize(original, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+    target_height, target_width = original.shape[:2]
+    if current.shape[0] != target_height or current.shape[1] != target_width:
+        current = cv2.resize(current, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
+    return original, current, scale
+
+
+# ================================================================
+# PREPROCESSING
+# ================================================================
+
+def prepare_pixel_image(image: np.ndarray, settings: dict) -> np.ndarray:
     if image is None:
-        return None
+        raise ValueError("Image is required")
 
-    if image.shape[1] == width and image.shape[0] == height:
-        return image.copy()
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    return cv2.resize(
-        image,
-        (width, height),
-        interpolation=cv2.INTER_AREA
-    )
-
-
-def to_gray(image):
-    """
-    Convert BGR image to grayscale.
-    """
-
-    if image is None:
-        return None
-
-    if len(image.shape) == 2:
-        return image
-
-    return cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2GRAY
-    )
-
-
-def apply_gaussian_blur(gray, settings):
-    """
-    Apply small Gaussian blur before comparison.
-    """
-
-    kernel = get_setting(
+    blur_size = get_setting(
         settings,
-        "gaussian_blur_kernel",
-        [5, 5]
+        "pixel_comparison_blur_kernel",
+        default=None,
     )
+    if blur_size is None:
+        # fall back to your existing "blur_kernel_size": [5, 5]
+        kernel_list = settings.get("blur_kernel_size", [7, 7])
+        blur_size = int(kernel_list[0]) if kernel_list else 7
+    blur_size = int(blur_size)
 
-    try:
-        kx = int(kernel[0])
-        ky = int(kernel[1])
-    except Exception:
-        kx, ky = 5, 5
+    if blur_size < 3:
+        blur_size = 3
+    if blur_size % 2 == 0:
+        blur_size += 1
 
-    if kx % 2 == 0:
-        kx += 1
-
-    if ky % 2 == 0:
-        ky += 1
-
-    return cv2.GaussianBlur(
-        gray,
-        (kx, ky),
-        0
-    )
+    gray = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
+    return gray
 
 
-# ============================================================================
-# PIXEL DIFFERENCE
-# ============================================================================
+# ================================================================
+# BACKGROUND MASK (polygon-aware, with border fallback)
+# ================================================================
 
-def calculate_pixel_difference(
-    original_gray,
-    current_gray,
-    comparison_mask,
-    settings
-):
+def create_background_mask(
+    image_shape: Tuple[int, int],
+    settings: dict,
+    roi_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """
-    Calculate changed-pixel percentage only inside comparison_mask.
+    Background = everything that is NOT inside the ROI polygon(s).
 
-    Returns:
-        changed_pixels
-        changed_percentage
-        valid_pixels
+    If no polygons were configured for this camera, falls back to the
+    original fixed-border-percentage behaviour so nothing breaks for
+    cameras you haven't drawn a region for yet.
     """
+    height, width = image_shape[:2]
 
-    if comparison_mask is None:
-        comparison_mask = np.ones_like(
-            original_gray,
-            dtype=np.uint8
-        ) * 255
+    if roi_mask is not None:
+        background = cv2.bitwise_not(roi_mask)
+        return background
 
-    valid_pixels = int(
-        np.count_nonzero(comparison_mask)
-    )
+    # ---- fallback: old border-percentage behaviour ----
+    mask = np.zeros((height, width), dtype=np.uint8)
+    border_percent = float(get_setting(settings, "pixel_comparison_border_percent", default=0.20, cast=float))
+    border_percent = max(0.05, min(border_percent, 0.45))
+    border_x = int(width * border_percent)
+    border_y = int(height * border_percent)
 
-    if valid_pixels <= 0:
-
-        logger.error(
-            "[Fixture] CAMERA COMPARISON FAILED: "
-            "comparison mask contains ZERO pixels. "
-            "Check ROI configuration."
-        )
-
-        return (
-            np.zeros_like(original_gray, dtype=np.uint8),
-            -1.0,
-            0
-        )
-
-    threshold = get_setting(
-        settings,
-        "pixel_comparison_threshold",
-        20.0,
-        float
-    )
-
-    difference = cv2.absdiff(
-        original_gray,
-        current_gray
-    )
-
-    changed_pixels = np.where(
-        difference >= threshold,
-        255,
-        0
-    ).astype(np.uint8)
-
-    # Keep only valid comparison area.
-    changed_pixels = cv2.bitwise_and(
-        changed_pixels,
-        comparison_mask
-    )
-
-    kernel_size = int(
-        get_setting(
-            settings,
-            "morphology_kernel_size",
-            3,
-            int
-        )
-    )
-
-    kernel_size = max(1, kernel_size)
-
-    kernel = np.ones(
-        (kernel_size, kernel_size),
-        np.uint8
-    )
-
-    changed_pixels = cv2.morphologyEx(
-        changed_pixels,
-        cv2.MORPH_OPEN,
-        kernel
-    )
-
-    changed_pixels = cv2.morphologyEx(
-        changed_pixels,
-        cv2.MORPH_CLOSE,
-        kernel
-    )
-
-    changed_count = int(
-        np.count_nonzero(changed_pixels)
-    )
-
-    changed_percentage = (
-        changed_count / valid_pixels
-    ) * 100.0
-
-    return (
-        changed_pixels,
-        float(changed_percentage),
-        valid_pixels
-    )
+    mask[0:border_y, :] = 255
+    mask[height - border_y:height, :] = 255
+    mask[:, 0:border_x] = 255
+    mask[:, width - border_x:width] = 255
+    return mask
 
 
-# ============================================================================
-# REGIONAL ANALYSIS
-# ============================================================================
+# ================================================================
+# BACKGROUND REGIONS (for "is the change spread out" check)
+# ================================================================
 
-def create_direction_regions(width, height):
-    """
-    Create directional regions.
+def create_background_regions(image_shape: Tuple[int, int], settings: dict) -> Dict[str, np.ndarray]:
+    height, width = image_shape[:2]
 
-    These are NOT used as the primary movement detector.
-
-    They are used to classify:
-        left
-        right
-        up
-        down
-        zoom
-        tilt
-    """
-
-    x1 = int(width * 0.20)
-    x2 = int(width * 0.80)
-
-    y1 = int(height * 0.20)
-    y2 = int(height * 0.80)
+    border_percent = float(get_setting(settings, "pixel_comparison_border_percent", default=0.20, cast=float))
+    border_percent = max(0.05, min(border_percent, 0.45))
+    border_x = int(width * border_percent)
+    border_y = int(height * border_percent)
 
     regions = {}
 
-    regions["top"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["top"][0:y1, :] = 255
+    top = np.zeros((height, width), dtype=np.uint8)
+    top[0:border_y, :] = 255
+    regions["top"] = top
 
-    regions["bottom"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["bottom"][y2:height, :] = 255
+    bottom = np.zeros((height, width), dtype=np.uint8)
+    bottom[height - border_y:height, :] = 255
+    regions["bottom"] = bottom
 
-    regions["left"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["left"][:, 0:x1] = 255
+    left = np.zeros((height, width), dtype=np.uint8)
+    left[:, 0:border_x] = 255
+    regions["left"] = left
 
-    regions["right"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["right"][:, x2:width] = 255
+    right = np.zeros((height, width), dtype=np.uint8)
+    right[:, width - border_x:width] = 255
+    regions["right"] = right
 
-    regions["top_left"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["top_left"][0:y1, 0:x1] = 255
+    top_left = np.zeros((height, width), dtype=np.uint8)
+    top_left[0:border_y, 0:border_x] = 255
+    regions["top_left"] = top_left
 
-    regions["top_right"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["top_right"][0:y1, x2:width] = 255
+    top_right = np.zeros((height, width), dtype=np.uint8)
+    top_right[0:border_y, width - border_x:width] = 255
+    regions["top_right"] = top_right
 
-    regions["bottom_left"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["bottom_left"][y2:height, 0:x1] = 255
+    bottom_left = np.zeros((height, width), dtype=np.uint8)
+    bottom_left[height - border_y:height, 0:border_x] = 255
+    regions["bottom_left"] = bottom_left
 
-    regions["bottom_right"] = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
-    regions["bottom_right"][y2:height, x2:width] = 255
+    bottom_right = np.zeros((height, width), dtype=np.uint8)
+    bottom_right[height - border_y:height, width - border_x:width] = 255
+    regions["bottom_right"] = bottom_right
 
     return regions
 
 
-def calculate_region_change(
-    changed_pixels,
-    comparison_mask,
-    region_mask
-):
-    """
-    Calculate changed percentage in one region.
+# ================================================================
+# PIXEL DIFFERENCE
+# ================================================================
 
-    Region is intersected with comparison mask.
-    """
+def calculate_pixel_difference(
+    original_gray: np.ndarray,
+    current_gray: np.ndarray,
+    background_mask: np.ndarray,
+    settings: dict,
+) -> Tuple[np.ndarray, float]:
+    difference = cv2.absdiff(original_gray, current_gray)
 
-    valid_region = cv2.bitwise_and(
-        region_mask,
-        comparison_mask
+    pixel_threshold = float(
+        get_setting(settings, "pixel_comparison_threshold", "pixel_threshold", default=25.0, cast=float)
     )
 
-    total = int(
-        np.count_nonzero(valid_region)
-    )
+    changed_pixels = (difference >= pixel_threshold).astype(np.uint8) * 255
+    changed_pixels = cv2.bitwise_and(changed_pixels, changed_pixels, mask=background_mask)
 
-    if total <= 0:
+    morphology_kernel_size = int(get_setting(settings, "pixel_comparison_morphology_kernel", default=3, cast=int))
+    morphology_kernel_size = max(1, morphology_kernel_size)
+    kernel = np.ones((morphology_kernel_size, morphology_kernel_size), dtype=np.uint8)
+
+    changed_pixels = cv2.morphologyEx(changed_pixels, cv2.MORPH_OPEN, kernel)
+    changed_pixels = cv2.morphologyEx(changed_pixels, cv2.MORPH_CLOSE, kernel)
+
+    background_pixel_count = int(np.count_nonzero(background_mask))
+    if background_pixel_count <= 0:
+        return changed_pixels, 0.0
+
+    changed_pixel_count = int(np.count_nonzero(changed_pixels))
+    changed_percentage = (changed_pixel_count / background_pixel_count) * 100.0
+
+    return changed_pixels, float(changed_percentage)
+
+
+def calculate_region_change(changed_pixels: np.ndarray, region_mask: np.ndarray) -> float:
+    region_pixels = int(np.count_nonzero(region_mask))
+    if region_pixels <= 0:
         return 0.0
-
-    changed = cv2.bitwise_and(
-        changed_pixels,
-        valid_region
-    )
-
-    changed_count = int(
-        np.count_nonzero(changed)
-    )
-
-    return (
-        changed_count / total
-    ) * 100.0
+    changed = cv2.bitwise_and(changed_pixels, changed_pixels, mask=region_mask)
+    changed_count = int(np.count_nonzero(changed))
+    return float((changed_count / region_pixels) * 100.0)
 
 
-def calculate_all_region_changes(
-    changed_pixels,
-    comparison_mask
-):
+# ================================================================
+# BLUR / DEFOCUS DETECTION  -- NEW
+# ================================================================
+
+def sharpness_score(gray_image: np.ndarray, mask: np.ndarray) -> float:
     """
-    Calculate directional regional percentages.
+    Variance of the Laplacian, restricted to the background area.
+    Lower value = blurrier image. This is a standard, cheap
+    focus/blur metric - no ML needed.
     """
-
-    height, width = changed_pixels.shape[:2]
-
-    regions = create_direction_regions(
-        width,
-        height
-    )
-
-    result = {}
-
-    for name, mask in regions.items():
-
-        result[name] = round(
-            calculate_region_change(
-                changed_pixels,
-                comparison_mask,
-                mask
-            ),
-            2
-        )
-
-    return result
-
-
-# ============================================================================
-# BLUR DETECTION
-# ============================================================================
-
-def calculate_sharpness(
-    gray,
-    comparison_mask
-):
-    """
-    Calculate Laplacian variance.
-    """
-
-    if gray is None:
+    laplacian = cv2.Laplacian(gray_image, cv2.CV_64F)
+    masked_values = laplacian[mask > 0]
+    if masked_values.size == 0:
         return 0.0
+    return float(masked_values.var())
 
-    if comparison_mask is None:
-        pixels_mask = np.ones_like(
-            gray,
-            dtype=np.uint8
-        ) * 255
-    else:
-        pixels_mask = comparison_mask
 
-    valid = gray[
-        pixels_mask > 0
-    ]
+def detect_blur_event(
+    original_gray: np.ndarray,
+    current_gray: np.ndarray,
+    background_mask: np.ndarray,
+    settings: dict,
+) -> Dict[str, Any]:
+    original_sharpness = sharpness_score(original_gray, background_mask)
+    current_sharpness = sharpness_score(current_gray, background_mask)
 
-    if valid.size == 0:
-        return 0.0
-
-    laplacian = cv2.Laplacian(
-        valid,
-        cv2.CV_64F
+    min_original_variance = float(
+        get_setting(settings, "camera_blur_minimum_original_variance", default=40.0, cast=float)
+    )
+    drop_ratio_threshold = float(
+        get_setting(settings, "camera_blur_variance_drop_ratio", default=0.5, cast=float)
     )
 
-    return float(
-        laplacian.var()
-    )
-
-
-def detect_blur(
-    original_gray,
-    current_gray,
-    comparison_mask,
-    settings
-):
-    """
-    Detect current image blur.
-
-    Uses both:
-        - absolute minimum sharpness
-        - current/original sharpness ratio
-    """
-
-    enabled = bool(
-        get_setting(
-            settings,
-            "camera_blur_enabled",
-            True
-        )
-    )
-
-    if not enabled:
-        return {
-            "is_blur": False,
-            "original_sharpness": 0.0,
-            "current_sharpness": 0.0,
-            "sharpness_ratio": 1.0
-        }
-
-    original_sharpness = calculate_sharpness(
-        original_gray,
-        comparison_mask
-    )
-
-    current_sharpness = calculate_sharpness(
-        current_gray,
-        comparison_mask
-    )
-
-    min_variance = get_setting(
-        settings,
-        "camera_blur_original_min_variance",
-        40.0,
-        float
-    )
-
-    ratio_threshold = get_setting(
-        settings,
-        "camera_blur_current_ratio_threshold",
-        0.50,
-        float
-    )
-
-    if original_sharpness <= 0:
-        ratio = 0.0
-    else:
-        ratio = (
-            current_sharpness /
-            original_sharpness
-        )
-
-    absolute_blur = (
-        current_sharpness < min_variance
-    )
-
-    relative_blur = (
-        original_sharpness >= min_variance
-        and ratio <= ratio_threshold
-    )
-
-    is_blur = (
-        absolute_blur
-        or relative_blur
-    )
+    is_blurred = False
+    if original_sharpness >= min_original_variance and current_sharpness > 0:
+        ratio = current_sharpness / original_sharpness
+        is_blurred = ratio < drop_ratio_threshold
+    elif original_sharpness >= min_original_variance and current_sharpness == 0:
+        is_blurred = True
 
     return {
-        "is_blur": bool(is_blur),
-        "original_sharpness": round(
-            original_sharpness,
-            2
-        ),
-        "current_sharpness": round(
-            current_sharpness,
-            2
-        ),
-        "sharpness_ratio": round(
-            ratio,
-            3
-        )
+        "is_blurred": is_blurred,
+        "original_sharpness": round(original_sharpness, 2),
+        "current_sharpness": round(current_sharpness, 2),
     }
 
 
-# ============================================================================
-# BLACK / BLANK FIELD DETECTION
-# ============================================================================
+# ================================================================
+# MOVEMENT CLASSIFICATION  -- NEW
+# ================================================================
 
-def detect_black_field(
-    gray,
-    comparison_mask,
-    settings
-):
+def classify_movement(
+    region_percentages: Dict[str, float],
+    region_change_threshold: float,
+    direction_bias_ratio: float,
+    tilt_diagonal_ratio: float = 1.15,
+    zoom_balance_ratio: float = 1.3,
+) -> str:
     """
-    Detect black / blank / almost-black camera field.
+    Turns the 8 region change percentages into a human label:
+    left / right / up / down / tilt / zoom / camera_change.
+    This is a heuristic on top of the same pixel-diff data you
+    already compute - no extra passes over the images needed.
 
-    A frame is considered black when:
-
-        mean brightness <= threshold
-
-    AND
-
-        percentage of dark pixels >= configured percentage.
+    Logic, in order:
+      1. One side changed much more than its opposite side -> left/right/up/down.
+      2. Otherwise, if the two DIAGONAL corner-pairs changed unevenly
+         (top-right+bottom-left vs top-left+bottom-right) -> tilt/rotation.
+         A pure rotation about the image centre changes one diagonal much
+         more than the other; a pure zoom changes both diagonals evenly.
+      3. Otherwise, if left/right and top/bottom are both roughly balanced
+         (no side or diagonal dominates) but the overall change is high
+         everywhere -> zoom.
+      4. Otherwise -> camera_change (a mixed/generic movement).
     """
+    eps = 1e-6
 
-    enabled = bool(
-        get_setting(
-            settings,
-            "black_field_detection_enabled",
-            True
-        )
-    )
+    left = np.mean([region_percentages["left"], region_percentages["top_left"], region_percentages["bottom_left"]])
+    right = np.mean([region_percentages["right"], region_percentages["top_right"], region_percentages["bottom_right"]])
+    top = np.mean([region_percentages["top"], region_percentages["top_left"], region_percentages["top_right"]])
+    bottom = np.mean([region_percentages["bottom"], region_percentages["bottom_left"], region_percentages["bottom_right"]])
 
-    if not enabled:
-        return {
-            "is_black": False,
-            "mean_brightness": 0.0,
-            "dark_percentage": 0.0
-        }
+    horizontal_ratio = (max(left, right) + eps) / (min(left, right) + eps)
+    vertical_ratio = (max(top, bottom) + eps) / (min(top, bottom) + eps)
 
-    if comparison_mask is None:
-        comparison_mask = np.ones_like(
-            gray,
-            dtype=np.uint8
-        ) * 255
+    if horizontal_ratio >= direction_bias_ratio and horizontal_ratio >= vertical_ratio:
+        return "right" if right > left else "left"
 
-    pixels = gray[
-        comparison_mask > 0
-    ]
+    if vertical_ratio >= direction_bias_ratio:
+        return "down" if bottom > top else "up"
 
-    if pixels.size == 0:
+    diagonal_a = np.mean([region_percentages["top_right"], region_percentages["bottom_left"]])
+    diagonal_b = np.mean([region_percentages["top_left"], region_percentages["bottom_right"]])
+    diagonal_ratio = (max(diagonal_a, diagonal_b) + eps) / (min(diagonal_a, diagonal_b) + eps)
 
-        return {
-            "is_black": False,
-            "mean_brightness": 0.0,
-            "dark_percentage": 0.0
-        }
+    if diagonal_ratio >= tilt_diagonal_ratio:
+        return "tilt"
 
-    mean_brightness = float(
-        np.mean(pixels)
-    )
+    if horizontal_ratio <= zoom_balance_ratio and vertical_ratio <= zoom_balance_ratio:
+        return "zoom"
 
-    dark_threshold = get_setting(
-        settings,
-        "black_field_pixel_threshold",
-        15.0,
-        float
-    )
+    return "camera_change"
 
-    minimum_dark_percentage = get_setting(
-        settings,
-        "black_field_dark_percentage",
-        90.0,
-        float
-    )
 
-    dark_percentage = float(
-        np.mean(
-            pixels <= dark_threshold
-        ) * 100.0
-    )
-
-    is_black = (
-        mean_brightness <= dark_threshold
-        and
-        dark_percentage >= minimum_dark_percentage
-    )
-
-    return {
-        "is_black": bool(is_black),
-        "mean_brightness": round(
-            mean_brightness,
-            2
-        ),
-        "dark_percentage": round(
-            dark_percentage,
-            2
-        )
-    }
-
-
-# ============================================================================
-# CAMERA MOVEMENT CLASSIFICATION
-# ============================================================================
-
-def classify_camera_movement(
-    region_changes,
-    changed_percentage,
-    settings
-):
-    """
-    Classify the direction/type of camera movement.
-
-    Important:
-        This function only classifies movement.
-
-    The actual decision that movement happened is made separately
-    using overall changed percentage.
-    """
-
-    top = float(
-        region_changes.get("top", 0.0)
-    )
-
-    bottom = float(
-        region_changes.get("bottom", 0.0)
-    )
-
-    left = float(
-        region_changes.get("left", 0.0)
-    )
-
-    right = float(
-        region_changes.get("right", 0.0)
-    )
-
-    top_left = float(
-        region_changes.get("top_left", 0.0)
-    )
-
-    top_right = float(
-        region_changes.get("top_right", 0.0)
-    )
-
-    bottom_left = float(
-        region_changes.get("bottom_left", 0.0)
-    )
-
-    bottom_right = float(
-        region_changes.get("bottom_right", 0.0)
-    )
-
-    horizontal_left = (
-        left + top_left + bottom_left
-    ) / 3.0
-
-    horizontal_right = (
-        right + top_right + bottom_right
-    ) / 3.0
-
-    vertical_top = (
-        top + top_left + top_right
-    ) / 3.0
-
-    vertical_bottom = (
-        bottom + bottom_left + bottom_right
-    ) / 3.0
-
-    horizontal_total = (
-        horizontal_left +
-        horizontal_right
-    )
-
-    vertical_total = (
-        vertical_top +
-        vertical_bottom
-    )
-
-    bias_ratio = get_setting(
-        settings,
-        "camera_direction_bias_ratio",
-        1.60,
-        float
-    )
-
-    diagonal_ratio = get_setting(
-        settings,
-        "camera_diagonal_bias_ratio",
-        1.15,
-        float
-    )
-
-    zoom_balance = get_setting(
-        settings,
-        "camera_zoom_balance_ratio",
-        1.30,
-        float
-    )
-
-    # ------------------------------------------------------------------
-    # LEFT / RIGHT
-    # ------------------------------------------------------------------
-
-    if horizontal_right > 0 and (
-        horizontal_right /
-        max(horizontal_left, 0.001)
-    ) >= bias_ratio:
-
-        return "right"
-
-    if horizontal_left > 0 and (
-        horizontal_left /
-        max(horizontal_right, 0.001)
-    ) >= bias_ratio:
-
-        return "left"
-
-    # ------------------------------------------------------------------
-    # UP / DOWN
-    # ------------------------------------------------------------------
-
-    if vertical_bottom > 0 and (
-        vertical_bottom /
-        max(vertical_top, 0.001)
-    ) >= bias_ratio:
-
-        return "down"
-
-    if vertical_top > 0 and (
-        vertical_top /
-        max(vertical_bottom, 0.001)
-    ) >= bias_ratio:
-
-        return "up"
-
-    # ------------------------------------------------------------------
-    # DIAGONAL / TILT
-    # ------------------------------------------------------------------
-
-    diagonal_values = {
-        "tilt_up_left": top_left,
-        "tilt_up_right": top_right,
-        "tilt_down_left": bottom_left,
-        "tilt_down_right": bottom_right,
-    }
-
-    sorted_diagonal = sorted(
-        diagonal_values.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    if sorted_diagonal:
-
-        strongest_name, strongest_value = (
-            sorted_diagonal[0]
-        )
-
-        second_value = (
-            sorted_diagonal[1][1]
-            if len(sorted_diagonal) > 1
-            else 0.0
-        )
-
-        if strongest_value > 0 and (
-            strongest_value /
-            max(second_value, 0.001)
-        ) >= diagonal_ratio:
-
-            return strongest_name
-
-    # ------------------------------------------------------------------
-    # ZOOM
-    # ------------------------------------------------------------------
-
-    if horizontal_total > 0 and vertical_total > 0:
-
-        horizontal_balance = (
-            max(horizontal_left, horizontal_right)
-            /
-            max(
-                min(horizontal_left, horizontal_right),
-                0.001
-            )
-        )
-
-        vertical_balance = (
-            max(vertical_top, vertical_bottom)
-            /
-            max(
-                min(vertical_top, vertical_bottom),
-                0.001
-            )
-        )
-
-        if (
-            horizontal_balance <= zoom_balance
-            and
-            vertical_balance <= zoom_balance
-        ):
-            return "zoom"
-
-    # ------------------------------------------------------------------
-    # Generic camera movement
-    # ------------------------------------------------------------------
-
-    if changed_percentage > 0:
-        return "camera_change"
-
-    return "stable"
-
-
-# ============================================================================
-# CAMERA MOVEMENT DECISION
-# ============================================================================
-
-def detect_camera_movement(
-    changed_pixels,
-    changed_percentage,
-    comparison_mask,
-    region_changes,
-    settings
-):
-    """
-    Decide whether the camera moved.
-
-    Primary detector:
-        overall changed percentage.
-
-    Regional analysis:
-        only helps classify movement direction.
-
-    This avoids the old problem where a real camera movement
-    was rejected because 3 outer regions did not cross threshold.
-    """
-
-    if changed_percentage < 0:
-        return {
-            "camera_changed": False,
-            "movement_type": "configuration_error",
-            "changed_percentage": changed_percentage,
-            "changed_regions": 0
-        }
-
-    movement_threshold = get_setting(
-        settings,
-        "camera_angle_pixel_change_percentage",
-        5.0,
-        float
-    )
-
-    region_threshold = get_setting(
-        settings,
-        "camera_angle_region_change_percentage",
-        5.0,
-        float
-    )
-
-    minimum_coverage = get_setting(
-        settings,
-        "camera_angle_minimum_background_coverage",
-        15.0,
-        float
-    )
-
-    required_regions = get_setting(
-        settings,
-        "camera_angle_required_changed_regions",
-        2,
-        int
-    )
-
-    valid_pixels = int(
-        np.count_nonzero(comparison_mask)
-    )
-
-    total_pixels = (
-        comparison_mask.shape[0] *
-        comparison_mask.shape[1]
-    )
-
-    coverage = (
-        valid_pixels / total_pixels
-    ) * 100.0 if total_pixels else 0.0
-
-    changed_region_names = [
-        name
-        for name, value in region_changes.items()
-        if value >= region_threshold
-    ]
-
-    changed_region_count = len(
-        changed_region_names
-    )
-
-    # --------------------------------------------------------------
-    # Primary movement condition
-    # --------------------------------------------------------------
-
-    percentage_condition = (
-        changed_percentage >= movement_threshold
-    )
-
-    coverage_condition = (
-        coverage >= minimum_coverage
-    )
-
-    # --------------------------------------------------------------
-    # Important:
-    #
-    # Do NOT require changed_region_count as a hard condition.
-    #
-    # A camera may move slightly left/right/up/down and still produce
-    # significant overall change without 2 or 3 border regions crossing
-    # the threshold.
-    # --------------------------------------------------------------
-
-    camera_changed = (
-        percentage_condition
-        and
-        coverage_condition
-    )
-
-    movement_type = "stable"
-
-    if camera_changed:
-
-        movement_type = classify_camera_movement(
-            region_changes,
-            changed_percentage,
-            settings
-        )
-
-    logger.info(
-        "[Fixture Movement] changed=%.2f%% | threshold=%.2f%% | "
-        "coverage=%.2f%% | min_coverage=%.2f%% | "
-        "changed_regions=%d | required_regions=%d | "
-        "camera_changed=%s | type=%s",
-        changed_percentage,
-        movement_threshold,
-        coverage,
-        minimum_coverage,
-        changed_region_count,
-        required_regions,
-        camera_changed,
-        movement_type
-    )
-
-    return {
-        "camera_changed": bool(camera_changed),
-        "movement_type": movement_type,
-        "changed_percentage": round(
-            changed_percentage,
-            2
-        ),
-        "coverage": round(
-            coverage,
-            2
-        ),
-        "changed_regions": changed_region_count,
-        "required_regions": required_regions,
-        "changed_region_names": changed_region_names,
-        "movement_threshold": movement_threshold,
-        "region_threshold": region_threshold,
-        "minimum_coverage": minimum_coverage
-    }
-
-
-# ============================================================================
-# COMPLETE CAMERA ANGLE DETECTION
-# ============================================================================
+# ================================================================
+# CAMERA ANGLE / VIEW DETECTION
+# ================================================================
 
 def detect_camera_angle_change(
-    original_image,
-    current_image,
-    roi_mask,
-    settings
-):
+    original: np.ndarray,
+    current: np.ndarray,
+    settings: dict,
+    roi_polygons: Optional[List[List[Tuple[int, int]]]] = None,
+    roi_source_resolution: Optional[Tuple[int, int]] = None,
+) -> Dict[str, Any]:
     """
-    Main comparison function.
+    Detect camera movement using PIXEL COMPARISON of the background
+    only (everything outside your configured ROI polygon(s)).
 
-    Priority:
-
-        1. Black / blank
-        2. Blur
-        3. Camera movement
-        4. Stable
+    Detects and labels: left, right, up, down, tilt, zoom, blur.
+    Any object/person/product change inside the ROI is ignored.
     """
+    if original is None:
+        raise ValueError("Original image is required")
+    if current is None:
+        raise ValueError("Current image is required")
 
-    if original_image is None:
-        raise ValueError(
-            "Original image is None"
+    # ---- ROI mask at native (pre-resize) resolution ----
+    native_roi_mask = None
+    if roi_polygons:
+        native_roi_mask = build_roi_mask(
+            original.shape,
+            roi_polygons,
+            roi_source_resolution or (original.shape[1], original.shape[0]),
+            margin_percent=float(get_setting(settings, "roi_margin_percent", default=0.0, cast=float)),
         )
 
-    if current_image is None:
-        raise ValueError(
-            "Current image is None"
+    # ---- resize original/current to a common working size ----
+    original, current, _scale = resize_same_size(original, current, settings)
+
+    original_gray = prepare_pixel_image(original, settings)
+    current_gray = prepare_pixel_image(current, settings)
+
+    roi_mask_resized = None
+    if native_roi_mask is not None:
+        roi_mask_resized = resize_mask_like(native_roi_mask, original_gray.shape)
+
+    background_mask = create_background_mask(original_gray.shape, settings, roi_mask=roi_mask_resized)
+
+    changed_pixels, changed_percentage = calculate_pixel_difference(
+        original_gray, current_gray, background_mask, settings
+    )
+
+    regions = create_background_regions(original_gray.shape, settings)
+    region_percentages = {name: calculate_region_change(changed_pixels, mask) for name, mask in regions.items()}
+
+    global_change_threshold = float(
+        get_setting(settings, "camera_angle_pixel_change_percentage", "change_percentage_threshold", default=8.0, cast=float)
+    )
+    region_change_threshold = float(
+        get_setting(settings, "camera_angle_region_change_percentage", default=8.0, cast=float)
+    )
+    required_changed_regions = int(
+        get_setting(settings, "camera_angle_required_changed_regions", default=3, cast=int)
+    )
+    minimum_region_coverage = float(
+        get_setting(settings, "camera_angle_minimum_region_coverage_percentage",
+                    "camera_angle_minimum_background_coverage", default=50.0, cast=float)
+    )
+    direction_bias_ratio = float(
+        get_setting(settings, "camera_direction_bias_ratio", default=1.6, cast=float)
+    )
+    tilt_diagonal_ratio = float(
+        get_setting(settings, "camera_tilt_diagonal_ratio_threshold", default=1.15, cast=float)
+    )
+    zoom_balance_ratio = float(
+        get_setting(settings, "camera_zoom_balance_ratio_threshold", default=1.3, cast=float)
+    )
+
+    changed_region_names = [name for name, pct in region_percentages.items() if pct >= region_change_threshold]
+    changed_region_count = len(changed_region_names)
+
+    total_background_pixels = int(np.count_nonzero(background_mask))
+    changed_background_pixels = int(np.count_nonzero(changed_pixels))
+    background_coverage = (
+        (changed_background_pixels / total_background_pixels) * 100.0 if total_background_pixels > 0 else 0.0
+    )
+
+    global_change = changed_percentage >= global_change_threshold
+    enough_regions = changed_region_count >= required_changed_regions
+    enough_coverage = background_coverage >= minimum_region_coverage
+
+    movement_camera_changed = global_change and enough_regions and enough_coverage
+
+    # ---- blur / defocus check (independent of the movement check) ----
+    blur_info = detect_blur_event(original_gray, current_gray, background_mask, settings)
+
+    camera_angle_changed = movement_camera_changed or blur_info["is_blurred"]
+
+    if blur_info["is_blurred"] and not movement_camera_changed:
+        movement_type = "blur"
+        reason = "camera_blurry_or_defocused"
+    elif movement_camera_changed:
+        movement_type = classify_movement(
+            region_percentages,
+            region_change_threshold,
+            direction_bias_ratio,
+            tilt_diagonal_ratio=tilt_diagonal_ratio,
+            zoom_balance_ratio=zoom_balance_ratio,
         )
-
-    working_width = int(
-        get_setting(
-            settings,
-            "working_width",
-            960,
-            int
-        )
-    )
-
-    working_height = int(
-        get_setting(
-            settings,
-            "working_height",
-            1080,
-            int
-        )
-    )
-
-    original = resize_image(
-        original_image,
-        working_width,
-        working_height
-    )
-
-    current = resize_image(
-        current_image,
-        working_width,
-        working_height
-    )
-
-    # --------------------------------------------------------------
-    # ROI must also be at working resolution.
-    # --------------------------------------------------------------
-
-    if roi_mask is None:
-
-        comparison_mask = np.ones(
-            (working_height, working_width),
-            dtype=np.uint8
-        ) * 255
-
+        reason = f"camera_background_pixel_change_{movement_type}"
+    elif not global_change:
+        movement_type = "none"
+        reason = "background_pixel_change_below_threshold"
+    elif not enough_regions:
+        movement_type = "none"
+        reason = "change_not_distributed_across_background"
+    elif not enough_coverage:
+        movement_type = "none"
+        reason = "background_coverage_below_threshold"
     else:
+        movement_type = "none"
+        reason = "stable_camera"
 
-        comparison_mask = resize_image(
-            roi_mask,
-            working_width,
-            working_height
-        )
-
-        if len(comparison_mask.shape) == 3:
-            comparison_mask = cv2.cvtColor(
-                comparison_mask,
-                cv2.COLOR_BGR2GRAY
-            )
-
-        _, comparison_mask = cv2.threshold(
-            comparison_mask,
-            127,
-            255,
-            cv2.THRESH_BINARY
-        )
-
-    original_gray = to_gray(
-        original
-    )
-
-    current_gray = to_gray(
-        current
-    )
-
-    original_gray = apply_gaussian_blur(
-        original_gray,
-        settings
-    )
-
-    current_gray = apply_gaussian_blur(
-        current_gray,
-        settings
-    )
-
-    # ==============================================================
-    # 1. BLACK / BLANK
-    # ==============================================================
-
-    black_result = detect_black_field(
-        current_gray,
-        comparison_mask,
-        settings
-    )
-
-    if black_result["is_black"]:
-
-        logger.warning(
-            "[Fixture] BLACK/BLANK CAMERA FIELD detected."
-        )
-
-        return {
-            "status": "CHANGE",
-            "camera_angle_changed": True,
-            "alert": True,
-            "movement_type": "black_field",
-
-            "changed_percentage": 100.0,
-
-            "blur": False,
-            "black_field": black_result,
-
-            "region_changes": {},
-
-            "sharpness": {}
-        }
-
-    # ==============================================================
-    # 2. BLUR
-    # ==============================================================
-
-    blur_result = detect_blur(
-        original_gray,
-        current_gray,
-        comparison_mask,
-        settings
-    )
-
-    if blur_result["is_blur"]:
-
-        logger.warning(
-            "[Fixture] BLUR / DEFOCUS detected | "
-            "original=%.2f | current=%.2f | ratio=%.3f",
-            blur_result["original_sharpness"],
-            blur_result["current_sharpness"],
-            blur_result["sharpness_ratio"]
-        )
-
-        return {
-            "status": "CHANGE",
-            "camera_angle_changed": True,
-            "alert": True,
-            "movement_type": "blur",
-
-            "changed_percentage": 0.0,
-
-            "blur": True,
-            "black_field": black_result,
-
-            "region_changes": {},
-
-            "sharpness": blur_result
-        }
-
-    # ==============================================================
-    # 3. PIXEL MOVEMENT
-    # ==============================================================
-
-    (
-        changed_pixels,
-        changed_percentage,
-        valid_pixels
-    ) = calculate_pixel_difference(
-        original_gray,
-        current_gray,
-        comparison_mask,
-        settings
-    )
-
-    if changed_percentage < 0:
-
-        return {
-            "status": "NO_CHANGE",
-            "camera_angle_changed": False,
-            "alert": False,
-            "movement_type": "configuration_error",
-
-            "changed_percentage": changed_percentage,
-
-            "blur": False,
-            "black_field": black_result,
-
-            "region_changes": {},
-
-            "sharpness": blur_result,
-
-            "valid_pixels": valid_pixels
-        }
-
-    # ==============================================================
-    # 4. REGION ANALYSIS
-    # ==============================================================
-
-    region_changes = calculate_all_region_changes(
-        changed_pixels,
-        comparison_mask
-    )
-
-    # ==============================================================
-    # 5. CAMERA MOVEMENT
-    # ==============================================================
-
-    movement_result = detect_camera_movement(
-        changed_pixels,
-        changed_percentage,
-        comparison_mask,
-        region_changes,
-        settings
-    )
-
-    camera_changed = movement_result[
-        "camera_changed"
-    ]
-
-    movement_type = movement_result[
-        "movement_type"
-    ]
-
-    if camera_changed:
-
-        logger.warning(
-            "[Fixture] CAMERA MOVEMENT detected | "
-            "type=%s | changed=%.2f%%",
-            movement_type,
-            changed_percentage
-        )
-
-        return {
-            "status": "CHANGE",
-            "camera_angle_changed": True,
-            "alert": True,
-
-            "movement_type": movement_type,
-
-            "changed_percentage": round(
-                changed_percentage,
-                2
-            ),
-
-            "blur": False,
-
-            "black_field": black_result,
-
-            "region_changes": region_changes,
-
-            "sharpness": blur_result,
-
-            "movement": movement_result
-        }
-
-    # ==============================================================
-    # 6. STABLE
-    # ==============================================================
+    status = "CHANGE" if camera_angle_changed else "NO_CHANGE"
 
     logger.info(
-        "[Fixture] Camera stable | changed=%.2f%%",
-        changed_percentage
+        "[Fixture Pixel Angle] global_change=%.2f%% | coverage=%.2f%% | "
+        "changed_regions=%d/%d | blur(orig=%.1f,cur=%.1f) | status=%s | movement=%s | reason=%s",
+        changed_percentage,
+        background_coverage,
+        changed_region_count,
+        len(regions),
+        blur_info["original_sharpness"],
+        blur_info["current_sharpness"],
+        status,
+        movement_type,
+        reason,
+    )
+    logger.info(
+        "[Fixture Pixel Regions] %s",
+        " | ".join(f"{name}={value:.2f}%" for name, value in region_percentages.items()),
     )
 
     return {
-        "status": "NO_CHANGE",
-        "camera_angle_changed": False,
-        "alert": False,
-
-        "movement_type": "stable",
-
-        "changed_percentage": round(
-            changed_percentage,
-            2
-        ),
-
-        "blur": False,
-
-        "black_field": black_result,
-
-        "region_changes": region_changes,
-
-        "sharpness": blur_result,
-
-        "movement": movement_result
+        "status": status,
+        "camera_angle_changed": camera_angle_changed,
+        "movement_type": movement_type,
+        "reason": reason,
+        "changed_percentage": round(float(changed_percentage), 2),
+        "background_coverage_percentage": round(float(background_coverage), 2),
+        "changed_region_count": changed_region_count,
+        "required_changed_regions": required_changed_regions,
+        "changed_regions": changed_region_names,
+        "region_percentages": {k: round(float(v), 2) for k, v in region_percentages.items()},
+        "blur": blur_info,
+        "used_polygon_roi": roi_mask_resized is not None,
+        "thresholds": {
+            "global_change_percentage": global_change_threshold,
+            "region_change_percentage": region_change_threshold,
+            "required_changed_regions": required_changed_regions,
+            "minimum_background_coverage": minimum_region_coverage,
+            "direction_bias_ratio": direction_bias_ratio,
+            "tilt_diagonal_ratio_threshold": tilt_diagonal_ratio,
+            "zoom_balance_ratio_threshold": zoom_balance_ratio,
+        },
     }
 
 
-# ============================================================================
-# FILE HELPERS
-# ============================================================================
-
-def ensure_directory(path):
-    os.makedirs(
-        path,
-        exist_ok=True
-    )
-
-
-def safe_name(value):
-    """
-    Make filesystem-safe name.
-    """
-
-    value = str(value)
-
-    invalid = '<>:"/\\|?*'
-
-    for char in invalid:
-        value = value.replace(
-            char,
-            "_"
-        )
-
-    return value.strip() or "unknown"
-
-
-def build_camera_directory(
-    root,
-    store_id,
-    camera_id,
-    camera_name
-):
-    """
-    Build per-camera fixture directory.
-    """
-
-    return os.path.join(
-        root,
-        safe_name(store_id),
-        f"camera_{safe_name(camera_id)}_{safe_name(camera_name)}"
-    )
-
-
-def save_image(path, image):
-    ensure_directory(
-        os.path.dirname(path)
-    )
-
-    success = cv2.imwrite(
-        path,
-        image
-    )
-
-    if not success:
-        raise IOError(
-            f"Could not save image: {path}"
-        )
-
-    return path
-
-
-# ============================================================================
+# ================================================================
 # BASELINE
-# ============================================================================
+# ================================================================
 
-def load_or_create_baseline(
-    camera,
-    frame,
-    baseline_root
-):
-    """
-    Create permanent original image once.
+def load_or_create_baseline(camera_dir: Path, frame: np.ndarray) -> Tuple[np.ndarray, bool, Path]:
+    baseline = find_original_image(camera_dir)
 
-    Pattern:
+    if baseline is not None:
+        image = cv2.imread(str(baseline))
+        if image is not None:
+            return image, False, baseline
+        logger.warning("[Fixture] Existing original unreadable. Recreating: %s", baseline)
+        try:
+            baseline.unlink()
+        except OSError:
+            logger.exception("[Fixture] Could not delete unreadable original: %s", baseline)
 
-        original_YYYYMMDD_HHMMSS.jpg
-    """
+    timestamp = timestamp_for_filename()
+    baseline = camera_dir / f"original_{timestamp}.jpg"
+    if not cv2.imwrite(str(baseline), frame):
+        raise RuntimeError(f"Unable to write original image: {baseline}")
 
-    store_id = camera.get(
-        "store_id",
-        camera.get("store", "unknown")
-    )
-
-    camera_id = camera.get(
-        "id",
-        "unknown"
-    )
-
-    camera_name = camera.get(
-        "name",
-        f"camera_{camera_id}"
-    )
-
-    camera_dir = build_camera_directory(
-        baseline_root,
-        store_id,
-        camera_id,
-        camera_name
-    )
-
-    ensure_directory(
-        camera_dir
-    )
-
-    existing = sorted(
-        glob.glob(
-            os.path.join(
-                camera_dir,
-                "original_*.jpg"
-            )
-        )
-    )
-
-    if existing:
-
-        logger.info(
-            "[Fixture] Existing baseline: %s",
-            existing[0]
-        )
-
-        image = cv2.imread(
-            existing[0]
-        )
-
-        if image is None:
-            raise IOError(
-                f"Could not read baseline: {existing[0]}"
-            )
-
-        return existing[0], image
-
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
-
-    path = os.path.join(
-        camera_dir,
-        f"original_{timestamp}.jpg"
-    )
-
-    save_image(
-        path,
-        frame
-    )
-
-    logger.info(
-        "[Fixture] Created permanent baseline: %s",
-        path
-    )
-
-    return path, frame.copy()
+    logger.info("[Fixture] ORIGINAL CREATED | %s", baseline)
+    return frame.copy(), True, baseline
 
 
-# ============================================================================
-# CURRENT IMAGE
-# ============================================================================
+# ================================================================
+# DAILY CURRENT IMAGE
+# ================================================================
 
 def load_or_create_current(
-    camera,
-    frame,
-    baseline_root
-):
-    """
-    Create one current image per day.
+    camera_dir: Path, frame: np.ndarray, date_compact: str
+) -> Tuple[np.ndarray, Path, bool]:
+    existing_current = find_current_image_for_date(camera_dir, date_compact)
 
-    Pattern:
+    if existing_current is not None:
+        current = cv2.imread(str(existing_current))
+        if current is not None:
+            return current, existing_current, False
+        logger.warning("[Fixture] Existing current image unreadable: %s", existing_current)
+        try:
+            existing_current.unlink()
+        except OSError:
+            logger.exception("[Fixture] Could not delete old current: %s", existing_current)
 
-        current_YYYYMMDD_HHMMSS.jpg
-    """
+    for old in camera_dir.glob("current_*.jpg"):
+        try:
+            old.unlink()
+        except OSError:
+            logger.exception("[Fixture] Could not delete old current: %s", old)
 
-    store_id = camera.get(
-        "store_id",
-        camera.get("store", "unknown")
-    )
+    timestamp = timestamp_for_filename()
+    current_path = camera_dir / f"current_{timestamp}.jpg"
+    if not cv2.imwrite(str(current_path), frame):
+        raise RuntimeError(f"Unable to write current image: {current_path}")
 
-    camera_id = camera.get(
-        "id",
-        "unknown"
-    )
-
-    camera_name = camera.get(
-        "name",
-        f"camera_{camera_id}"
-    )
-
-    camera_dir = build_camera_directory(
-        baseline_root,
-        store_id,
-        camera_id,
-        camera_name
-    )
-
-    ensure_directory(
-        camera_dir
-    )
-
-    today = datetime.now().strftime(
-        "%Y%m%d"
-    )
-
-    pattern = os.path.join(
-        camera_dir,
-        f"current_{today}_*.jpg"
-    )
-
-    existing = sorted(
-        glob.glob(pattern)
-    )
-
-    if existing:
-
-        path = existing[-1]
-
-        logger.info(
-            "[Fixture] Existing current image: %s",
-            path
-        )
-
-        image = cv2.imread(
-            path
-        )
-
-        if image is None:
-            raise IOError(
-                f"Could not read current image: {path}"
-            )
-
-        return path, image
-
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
-
-    path = os.path.join(
-        camera_dir,
-        f"current_{timestamp}.jpg"
-    )
-
-    save_image(
-        path,
-        frame
-    )
-
-    logger.info(
-        "[Fixture] Created current image: %s",
-        path
-    )
-
-    return path, frame.copy()
+    logger.info("[Fixture] CURRENT CREATED | %s", current_path)
+    return frame.copy(), current_path, True
 
 
-# ============================================================================
-# DAILY CHECK MARKER
-# ============================================================================
+# ================================================================
+# RTSP CAPTURE
+# ================================================================
 
-def get_daily_marker_path(
-    camera,
-    baseline_root
-):
-    store_id = camera.get(
-        "store_id",
-        camera.get("store", "unknown")
-    )
-
-    camera_id = camera.get(
-        "id",
-        "unknown"
-    )
-
-    camera_name = camera.get(
-        "name",
-        f"camera_{camera_id}"
-    )
-
-    camera_dir = build_camera_directory(
-        baseline_root,
-        store_id,
-        camera_id,
-        camera_name
-    )
-
-    today = datetime.now().strftime(
-        "%Y%m%d"
-    )
-
-    return os.path.join(
-        camera_dir,
-        f".fixture_checked_{today}"
-    )
-
-
-def is_daily_check_completed(
-    camera,
-    baseline_root
-):
-    return os.path.exists(
-        get_daily_marker_path(
-            camera,
-            baseline_root
-        )
-    )
-
-
-def mark_daily_check_completed(
-    camera,
-    baseline_root
-):
-    marker = get_daily_marker_path(
-        camera,
-        baseline_root
-    )
-
-    ensure_directory(
-        os.path.dirname(marker)
-    )
-
-    with open(
-        marker,
-        "w",
-        encoding="utf-8"
-    ) as file:
-        file.write(
-            datetime.now().isoformat()
-        )
-
-    logger.info(
-        "[Fixture] Daily check marked complete: %s",
-        marker
-    )
-
-
-# ============================================================================
-# RTSP
-# ============================================================================
-
-def read_rtsp_frame(camera):
-    """
-    Read one frame from RTSP URL.
-    """
-
-    rtsp_url = (
-        camera.get("rtsp_url")
-        or camera.get("rtsp")
-        or camera.get("url")
-    )
-
-    if not rtsp_url:
-        logger.error(
-            "[Fixture] No RTSP URL configured for camera %s",
-            camera.get("id")
-        )
-        return None
-
-    logger.info(
-        "[Fixture] Opening RTSP camera=%s",
-        camera.get("id")
-    )
-
-    cap = cv2.VideoCapture(
-        rtsp_url
-    )
-
+def open_rtsp(rtsp_url: str):
+    cap = cv2.VideoCapture(rtsp_url)
     try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
+    if not cap.isOpened():
+        cap.release()
+        return None
+    return cap
 
-        if not cap.isOpened():
 
-            logger.error(
-                "[Fixture] Could not open RTSP camera=%s",
-                camera.get("id")
-            )
-
+def read_frame(rtsp_url: str, reconnect_delay: float) -> Optional[np.ndarray]:
+    cap = open_rtsp(rtsp_url)
+    if cap is None:
+        logger.error("[Fixture] RTSP open failed: %s", rtsp_url)
+        time.sleep(reconnect_delay)
+        return None
+    try:
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            logger.warning("[Fixture] RTSP frame read failed")
             return None
-
-        success, frame = cap.read()
-
-        if not success or frame is None:
-
-            logger.error(
-                "[Fixture] Could not read frame camera=%s",
-                camera.get("id")
-            )
-
-            return None
-
         return frame
-
     finally:
-
         cap.release()
 
 
-# ============================================================================
+# ================================================================
+# DAILY CHECK TIME
+# ================================================================
+
+def is_after_check_time(now: datetime, check_time: str) -> bool:
+    try:
+        hour, minute = map(int, str(check_time).split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except (TypeError, ValueError):
+        logger.error("[Fixture] Invalid daily_check_time=%r; using 13:00", check_time)
+        hour, minute = 13, 0
+    return now.hour * 60 + now.minute >= hour * 60 + minute
+
+
+def already_checked_today(camera_dir: Path, date_compact: str) -> bool:
+    return marker_path(camera_dir, date_compact).exists()
+
+
+def mark_checked_today(camera_dir: Path, date_compact: str) -> None:
+    marker_path(camera_dir, date_compact).touch(exist_ok=True)
+
+
+# ================================================================
 # API
-# ============================================================================
+# ================================================================
 
-def build_api_payload(
-    camera,
-    original_path,
-    current_path,
-    result
-):
-    """
-    Build fixture-missing API payload.
-
-    Keeps compatibility with existing fixture event API.
-    """
-
-    store_id = camera.get(
-        "store_id",
-        camera.get("store", "")
+def build_api_url(config: dict) -> str:
+    base = str(config.get("SERVER_BASE_URL", "http://127.0.0.1:8000")).strip().rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        base = "http://" + base
+    endpoint = config.get("fixture_missing", {}).get(
+        "api_endpoint", "/storescript/api/fixture-missing-event"
     )
-
-    category_name = camera.get(
-        "category_name",
-        camera.get(
-            "name",
-            f"camera_{camera.get('id', '')}"
-        )
-    )
-
-    camera_id = camera.get(
-        "id",
-        ""
-    )
-
-    camera_name = camera.get(
-        "name",
-        f"camera_{camera_id}"
-    )
-
-    status = result.get(
-        "status",
-        "NO_CHANGE"
-    )
-
-    alert = (
-        "yes"
-        if result.get(
-            "alert",
-            False
-        )
-        else "no"
-    )
-
-    return {
-        "store_id": store_id,
-        "camera_no": camera_id,
-        "camera_name": camera_name,
-        "category_name": category_name,
-
-        "status": status,
-
-        "alert": alert,
-
-        "movement_type": result.get(
-            "movement_type",
-            "stable"
-        ),
-
-        "camera_angle_changed": result.get(
-            "camera_angle_changed",
-            False
-        ),
-
-        "changed_percentage": result.get(
-            "changed_percentage",
-            0.0
-        ),
-
-        "original_image": original_path,
-
-        "current_image": current_path,
-
-        "timestamp": datetime.now().isoformat()
-    }
+    return base + "/" + str(endpoint).lstrip("/")
 
 
 def send_fixture_event(
-    camera,
-    payload,
-    settings
-):
-    """
-    Send fixture event to configured API.
-
-    Existing environment/configuration can provide endpoint using:
-
-        FIXTURE_MISSING_API_URL
-
-    or:
-
-        fixture_missing_api_url
-
-    """
-
-    endpoint = (
-        os.getenv(
-            "FIXTURE_MISSING_API_URL"
-        )
-        or settings.get(
-            "fixture_missing_api_url"
-        )
-        or settings.get(
-            "api_url"
-        )
-    )
-
-    if not endpoint:
-
-        logger.warning(
-            "[Fixture] API endpoint not configured. "
-            "Event will not be posted."
-        )
-
-        return False
-
-    timeout = get_setting(
-        settings,
-        "api_timeout",
-        30,
-        int
-    )
-
-    try:
-
-        response = requests.post(
-            endpoint,
-            json=payload,
-            timeout=timeout
-        )
-
-        logger.info(
-            "[Fixture] API response=%s | body=%s",
-            response.status_code,
-            response.text[:500]
-        )
-
-        response.raise_for_status()
-
-        return True
-
-    except Exception as exc:
-
-        logger.exception(
-            "[Fixture] API request failed: %s",
-            exc
-        )
-
-        return False
-
-
-# ============================================================================
-# SNAPSHOT
-# ============================================================================
-
-def save_change_snapshot(
-    camera,
-    current_image,
-    snapshot_root,
-    movement_type
-):
-    """
-    Save snapshot only when CHANGE is detected.
-    """
-
-    store_id = camera.get(
-        "store_id",
-        camera.get("store", "unknown")
-    )
-
-    camera_id = camera.get(
-        "id",
-        "unknown"
-    )
-
-    camera_name = camera.get(
-        "name",
-        f"camera_{camera_id}"
-    )
-
-    camera_dir = build_camera_directory(
-        snapshot_root,
-        store_id,
-        camera_id,
-        camera_name
-    )
-
-    ensure_directory(
-        camera_dir
-    )
-
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S_%f"
-    )
-
-    filename = (
-        f"fixture_{safe_name(movement_type)}_"
-        f"{timestamp}.jpg"
-    )
-
-    path = os.path.join(
-        camera_dir,
-        filename
-    )
-
-    save_image(
-        path,
-        current_image
-    )
-
-    logger.warning(
-        "[Fixture] CHANGE snapshot saved: %s",
-        path
-    )
-
-    return path
-
-
-# ============================================================================
-# CHECK TIME
-# ============================================================================
-
-def is_check_time_reached(
-    settings
-):
-    """
-    Return True when current local time is >= configured check time.
-    """
-
-    configured = str(
-        get_setting(
-            settings,
-            "check_time",
-            "13:00"
-        )
-    )
-
-    try:
-
-        hour, minute = map(
-            int,
-            configured.split(":")
-        )
-
-    except Exception:
-
-        hour = 13
-        minute = 0
-
-    now = datetime.now()
-
-    target_minutes = (
-        hour * 60 +
-        minute
-    )
-
-    current_minutes = (
-        now.hour * 60 +
-        now.minute
-    )
-
-    return current_minutes >= target_minutes
-
-
-# ============================================================================
-# CAMERA PROCESSING
-# ============================================================================
-
-def process_camera(
-    camera,
-    config
-):
-    """
-    Process one camera.
-    """
-
-    camera_id = camera.get(
-        "id",
-        "unknown"
-    )
-
-    camera_name = camera.get(
-        "name",
-        f"camera_{camera_id}"
-    )
-
-    settings = get_camera_fixture_settings(
-        camera,
-        config
-    )
-
-    camera_fixture = (
-        camera.get(
-            "fixture_missing",
-            {}
-        )
-        or {}
-    )
-
-    global_fixture = (
-        config.get(
-            "fixture_missing",
-            {}
-        )
-        or {}
-    )
-
-    enabled_global = bool(
-        global_fixture.get(
-            "enabled",
-            True
-        )
-    )
-
-    enabled_camera = bool(
-        camera_fixture.get(
-            "enabled",
-            enabled_global
-        )
-    )
-
-    if not enabled_global or not enabled_camera:
-
-        logger.info(
-            "[Fixture] Disabled camera=%s",
-            camera_id
-        )
-
-        return
-
-    baseline_root = get_setting(
-        settings,
-        "fixture_baseline_root",
-        "./var/data/fixture"
-    )
-
-    snapshot_root = get_setting(
-        settings,
-        "fixture_snapshot_root",
-        "./var/data/fixture_missing_snapshots"
-    )
-
-    # --------------------------------------------------------------
-    # Daily marker
-    # --------------------------------------------------------------
-
-    if is_daily_check_completed(
-        camera,
-        baseline_root
-    ):
-
-        logger.debug(
-            "[Fixture] Daily check already completed "
-            "camera=%s",
-            camera_id
-        )
-
-        return
-
-    # --------------------------------------------------------------
-    # Check time
-    # --------------------------------------------------------------
-
-    if not is_check_time_reached(
-        settings
-    ):
-
-        logger.debug(
-            "[Fixture] Waiting for check time "
-            "camera=%s",
-            camera_id
-        )
-
-        return
-
-    # --------------------------------------------------------------
-    # Read camera
-    # --------------------------------------------------------------
-
-    frame = read_rtsp_frame(
-        camera
-    )
-
-    if frame is None:
-        return
-
-    frame_height, frame_width = (
-        frame.shape[:2]
-    )
-
-    logger.info(
-        "[Fixture] Camera=%s | frame=%sx%s",
-        camera_id,
-        frame_width,
-        frame_height
-    )
-
-    # --------------------------------------------------------------
-    # Baseline
-    # --------------------------------------------------------------
-
-    original_path, original_image = (
-        load_or_create_baseline(
-            camera,
-            frame,
-            baseline_root
-        )
-    )
-
-    # --------------------------------------------------------------
-    # Current
-    # --------------------------------------------------------------
-
-    current_path, current_image = (
-        load_or_create_current(
-            camera,
-            frame,
-            baseline_root
-        )
-    )
-
-    # --------------------------------------------------------------
-    # ROI
-    # --------------------------------------------------------------
-
-    polygons = extract_polygons_from_camera_config(
-        camera_fixture
-    )
-
-    roi_source_resolution = (
-        settings.get(
-            "roi_source_resolution",
-            DEFAULT_SETTINGS[
-                "roi_source_resolution"
-            ]
-        )
-    )
-
-    scaled_polygons = scale_polygons(
-        polygons,
-        roi_source_resolution,
-        frame_width,
-        frame_height
-    )
-
-    roi_mask = build_roi_mask(
-        scaled_polygons,
-        frame_width,
-        frame_height
-    )
-
-    comparison_mask = create_comparison_mask(
-        roi_mask,
-        frame_width,
-        frame_height,
-        settings
-    )
-
-    comparison_pixels = int(
-        np.count_nonzero(
-            comparison_mask
-        )
-    )
-
-    comparison_coverage = (
-        comparison_pixels /
-        (frame_width * frame_height)
-    ) * 100.0
-
-    logger.info(
-        "[Fixture ROI] camera=%s | source_resolution=%s | "
-        "polygons=%d | comparison_pixels=%d | "
-        "comparison_coverage=%.2f%%",
-        camera_id,
-        roi_source_resolution,
-        len(scaled_polygons),
-        comparison_pixels,
-        comparison_coverage
-    )
-
-    # --------------------------------------------------------------
-    # DETECTION
-    # --------------------------------------------------------------
-
-    result = detect_camera_angle_change(
-        original_image,
-        current_image,
-        comparison_mask,
-        settings
-    )
-
-    logger.info(
-        "[Fixture RESULT] camera=%s (%s) | "
-        "status=%s | alert=%s | movement=%s | "
-        "changed=%.2f%%",
-        camera_id,
-        camera_name,
-        result.get("status"),
-        result.get("alert"),
-        result.get("movement_type"),
-        result.get("changed_percentage", 0.0)
-    )
-
-    # --------------------------------------------------------------
-    # Snapshot
-    # --------------------------------------------------------------
-
-    snapshot_path = None
-
-    if result.get("alert"):
-
-        snapshot_path = save_change_snapshot(
-            camera,
-            current_image,
-            snapshot_root,
-            result.get(
-                "movement_type",
-                "camera_change"
-            )
-        )
-
-        result["snapshot_path"] = (
-            snapshot_path
-        )
-
-    # --------------------------------------------------------------
-    # API
-    # --------------------------------------------------------------
-
-    payload = build_api_payload(
-        camera,
-        original_path,
-        current_path,
-        result
-    )
-
-    if snapshot_path:
-        payload["snapshot_path"] = (
-            snapshot_path
-        )
-
-    api_success = send_fixture_event(
-        camera,
-        payload,
-        settings
-    )
-
-    # --------------------------------------------------------------
-    # Marker
-    #
-    # Mark only after successful processing/API.
-    # --------------------------------------------------------------
-
-    if api_success or not (
-        os.getenv(
-            "FIXTURE_MISSING_API_URL"
-        )
-        or settings.get(
-            "fixture_missing_api_url"
-        )
-        or settings.get(
-            "api_url"
-        )
-    ):
-
-        mark_daily_check_completed(
-            camera,
-            baseline_root
-        )
-
-
-# ============================================================================
-# CAMERA LOOP
-# ============================================================================
-
-def camera_worker(
-    camera,
-    config,
-    interval=30
-):
-    """
-    Background worker for one camera.
-    """
-
-    camera_id = camera.get(
-        "id",
-        "unknown"
-    )
-
-    logger.info(
-        "[Fixture] Worker started camera=%s",
-        camera_id
-    )
-
-    while True:
-
+    api_url: str,
+    store_id: Any,
+    store_name: str,
+    camera_no: int,
+    camera_name: str,
+    camera_category_name: str,
+    status: str,
+    alert: str,
+    movement_type: str,
+    original_path: Path,
+    current_path: Path,
+    max_retries: int,
+    retry_delay: float,
+) -> bool:
+    data = {
+        "camera_no": str(camera_no),
+        "camera_name": str(camera_name),
+        "store_id": str(store_id),
+        "store_name": str(store_name or ""),
+        "camera_category_name": str(camera_category_name),
+        "status": str(status).upper(),
+        "alert": str(alert).lower(),
+        "movement_type": str(movement_type),
+    }
+
+    for attempt in range(1, max_retries + 1):
+        original_file = None
+        current_file = None
         try:
+            if not original_path.exists():
+                raise FileNotFoundError(f"Original image missing: {original_path}")
+            if not current_path.exists():
+                raise FileNotFoundError(f"Current image missing: {current_path}")
 
-            process_camera(
-                camera,
-                config
+            original_file = open(original_path, "rb")
+            current_file = open(current_path, "rb")
+
+            files = {
+                "original_image": (original_path.name, original_file, "image/jpeg"),
+                "current_image": (current_path.name, current_file, "image/jpeg"),
+            }
+
+            logger.info(
+                "[Fixture] POST | attempt=%d/%d | store=%s | camera=%s | status=%s | alert=%s | movement=%s",
+                attempt, max_retries, store_id, camera_no, status, alert, movement_type,
             )
+
+            response = requests.post(api_url, data=data, files=files, timeout=30)
+
+            logger.info(
+                "[Fixture] API RESPONSE | HTTP=%s | body=%s",
+                response.status_code, response.text[:1000],
+            )
+
+            if response.status_code in (200, 201):
+                return True
+            if 400 <= response.status_code < 500:
+                logger.error("[Fixture] Non-retryable API error | HTTP=%s", response.status_code)
+                return False
 
         except Exception as exc:
-
             logger.exception(
-                "[Fixture] Camera=%s processing error: %s",
-                camera_id,
-                exc
+                "[Fixture] API request failed | attempt=%d/%d | error=%s", attempt, max_retries, exc
             )
+        finally:
+            if original_file is not None:
+                original_file.close()
+            if current_file is not None:
+                current_file.close()
 
-        time.sleep(
-            interval
-        )
+        if attempt < max_retries:
+            time.sleep(retry_delay)
+
+    return False
 
 
-# ============================================================================
-# MAIN ENTRY
-# ============================================================================
+# ================================================================
+# CAMERA PROCESSOR
+# ================================================================
 
-def run_fixture_missing(
-    config=None
-):
-    """
-    Start fixture missing processing for all configured cameras.
-    """
+def process_camera(store_name: str, store: dict, camera: dict, config: dict) -> None:
+    camera_no = int(camera["id"])
+    camera_category_name = str(camera.get("category_name", camera.get("name", f"camera_{camera_no}")))
+    camera_name = f"camera_{camera_no}"
+    rtsp_url = camera.get("rtsp_url")
 
-    if config is None:
-        config = load_config()
-
-    cameras = config.get(
-        "cameras",
-        []
-    )
-
-    if not cameras:
-
-        logger.warning(
-            "[Fixture] No cameras found in configuration."
-        )
-
+    if not rtsp_url:
+        logger.error("[Fixture] Missing RTSP URL | store=%s | camera=%s", store_name, camera_no)
         return
 
-    global_fixture = (
-        config.get(
-            "fixture_missing",
-            {}
+    global_fixture = config.get("fixture_missing", {})
+    camera_fixture = camera.get("fixture_missing", {})
+
+    if not global_fixture.get("enabled", True):
+        logger.info("[Fixture] Globally disabled")
+        return
+    if not camera_fixture.get("enabled", True):
+        logger.info("[Fixture] Camera disabled | camera=%s", camera_no)
+        return
+
+    # ---- merge global + per-camera settings (camera overrides global) ----
+    merged_settings = {**global_fixture, **{k: v for k, v in camera_fixture.items() if k != "regions"}}
+
+    # ---- ROI polygons for this camera ----
+    roi_polygons = extract_polygons_from_camera_config(camera_fixture)
+    roi_source_resolution = tuple(
+        global_fixture.get("roi_source_resolution", camera_fixture.get("roi_source_resolution", [0, 0]))
+    ) or None
+    if roi_polygons and (not roi_source_resolution or roi_source_resolution == (0, 0)):
+        logger.warning(
+            "[Fixture] camera=%s has ROI polygons but no roi_source_resolution set - "
+            "assuming polygons match the live frame size exactly.",
+            camera_no,
         )
-        or {}
+
+    if roi_polygons:
+        logger.info(
+            "[Fixture] camera=%s using %d polygon(s) as the ignore-area (ROI)", camera_no, len(roi_polygons)
+        )
+    else:
+        logger.info(
+            "[Fixture] camera=%s has no polygons configured - falling back to a fixed border %% "
+            "for the background area.",
+            camera_no,
+        )
+
+    baseline_root = resolve_path(
+        global_fixture.get("baseline_directory", "./var/data/fixture"), "./var/data/fixture"
+    )
+    snapshot_root = resolve_path(
+        global_fixture.get("snapshot_directory", "./var/data/fixture_missing_snapshots"),
+        "./var/data/fixture_missing_snapshots",
     )
 
-    interval = int(
-        global_fixture.get(
-            "poll_interval",
-            30
-        )
+    camera_dir = camera_directory(baseline_root, store.get("store_id"), camera_category_name, camera_name)
+    snapshot_dir = (
+        snapshot_root / safe_name(store.get("store_id")) / safe_name(camera_category_name) / safe_name(camera_name)
     )
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    threads = []
-
-    for camera in cameras:
-
-        camera_fixture = (
-            camera.get(
-                "fixture_missing",
-                {}
-            )
-            or {}
-        )
-
-        if not camera_fixture.get(
-            "enabled",
-            global_fixture.get(
-                "enabled",
-                True
-            )
-        ):
-            continue
-
-        thread = threading.Thread(
-            target=camera_worker,
-            args=(
-                camera,
-                config,
-                interval
-            ),
-            daemon=True
-        )
-
-        thread.start()
-
-        threads.append(
-            thread
-        )
+    daily_check_time = global_fixture.get("daily_check_time", "13:00")
+    reconnect_delay = float(global_fixture.get("rtsp_reconnect_delay_seconds", 5))
+    poll_interval = float(global_fixture.get("poll_interval_seconds", 0.25))
+    api_url = build_api_url(config)
 
     logger.info(
-        "[Fixture] Started %d camera workers.",
-        len(threads)
+        "[Fixture] Camera started | store=%s | camera=%s | category=%s | RTSP=%s",
+        store.get("store_id"), camera_no, camera_category_name, rtsp_url,
     )
+    logger.info("[Fixture] MODE = PIXEL CAMERA ANGLE + BLUR (polygon ROI aware)")
+    logger.info("[Fixture] Object/person/product changes inside the ROI polygon are ignored")
 
-    for thread in threads:
-        thread.join()
+    while True:
+        now = datetime.now()
+        date_compact = now.strftime("%Y%m%d")
+        date_text = now.strftime("%Y-%m-%d")
+
+        if already_checked_today(camera_dir, date_compact):
+            time.sleep(5)
+            continue
+
+        frame = read_frame(rtsp_url, reconnect_delay)
+        if frame is None:
+            time.sleep(reconnect_delay)
+            continue
+
+        try:
+            original, original_created, original_path = load_or_create_baseline(camera_dir, frame)
+        except Exception:
+            logger.exception("[Fixture] Baseline failure | camera=%s", camera_no)
+            time.sleep(poll_interval)
+            continue
+
+        if original_created:
+            logger.info(
+                "[Fixture] Baseline ready | camera=%s | original=%s | waiting for %s",
+                camera_no, original_path.name, daily_check_time,
+            )
+            time.sleep(poll_interval)
+            continue
+
+        if not is_after_check_time(now, daily_check_time):
+            time.sleep(poll_interval)
+            continue
+
+        lock = get_camera_lock(camera_no, date_compact)
+        if not lock.acquire(blocking=False):
+            time.sleep(1)
+            continue
+
+        try:
+            if already_checked_today(camera_dir, date_compact):
+                continue
+
+            current, current_path, _current_created = load_or_create_current(camera_dir, frame, date_compact)
+
+            angle_result = detect_camera_angle_change(
+                original,
+                current,
+                merged_settings,
+                roi_polygons=roi_polygons,
+                roi_source_resolution=roi_source_resolution,
+            )
+
+            logger.info(
+                "[Fixture PIXEL TEST] camera=%s | status=%s | movement=%s | changed=%.2f%% | "
+                "coverage=%.2f%% | regions=%d | reason=%s",
+                camera_no,
+                angle_result.get("status"),
+                angle_result.get("movement_type"),
+                angle_result.get("changed_percentage", 0.0),
+                angle_result.get("background_coverage_percentage", 0.0),
+                angle_result.get("changed_region_count", 0),
+                angle_result.get("reason", ""),
+            )
+
+            if angle_result.get("camera_angle_changed", False):
+                status = "YES"
+                alert = "yes"
+                movement_type = angle_result.get("movement_type", "camera_change")
+
+                logger.warning(
+                    "[Fixture] CAMERA ANGLE / VIEW CHANGE DETECTED | camera=%s | movement=%s | "
+                    "changed=%.2f%% | coverage=%.2f%% | regions=%d | reason=%s",
+                    camera_no, movement_type,
+                    angle_result.get("changed_percentage", 0.0),
+                    angle_result.get("background_coverage_percentage", 0.0),
+                    angle_result.get("changed_region_count", 0),
+                    angle_result.get("reason", ""),
+                )
+
+                alert_snapshot = snapshot_dir / (
+                    f"camera_{movement_type}_{date_compact}_{now.strftime('%H%M%S_%f')}.jpg"
+                )
+                try:
+                    saved = cv2.imwrite(str(alert_snapshot), current)
+                    if saved:
+                        logger.info("[Fixture] CAMERA ANGLE SNAPSHOT SAVED | %s", alert_snapshot)
+                    else:
+                        logger.error("[Fixture] CAMERA ANGLE SNAPSHOT WRITE FAILED | %s", alert_snapshot)
+                except Exception:
+                    logger.exception("[Fixture] Camera angle snapshot save failed")
+            else:
+                status = "NO"
+                alert = "no"
+                movement_type = "none"
+                logger.info(
+                    "[Fixture] CAMERA STABLE | camera=%s | object/product/person changes inside "
+                    "ROI are ignored",
+                    camera_no,
+                )
+
+            success = send_fixture_event(
+                api_url=api_url,
+                store_id=store.get("store_id"),
+                store_name=store_name,
+                camera_no=camera_no,
+                camera_name=camera_name,
+                camera_category_name=camera_category_name,
+                status=status,
+                alert=alert,
+                movement_type=movement_type,
+                original_path=original_path,
+                current_path=current_path,
+                max_retries=int(global_fixture.get("max_api_retries", 5)),
+                retry_delay=float(global_fixture.get("api_retry_delay_seconds", 5)),
+            )
+
+            if success:
+                mark_checked_today(camera_dir, date_compact)
+                logger.info(
+                    "[Fixture] DAILY CHECK COMPLETED | store=%s | camera=%s | date=%s | status=%s | alert=%s",
+                    store.get("store_id"), camera_no, date_text, status, alert,
+                )
+            else:
+                logger.error(
+                    "[Fixture] DAILY CHECK NOT MARKED COMPLETE | camera=%s | API delivery failed", camera_no
+                )
+
+        except Exception:
+            logger.exception("[Fixture] Daily processing failed | camera=%s", camera_no)
+        finally:
+            lock.release()
+
+        time.sleep(poll_interval)
 
 
-# ============================================================================
-# COMPATIBILITY ALIAS
-# ============================================================================
+# ================================================================
+# MAIN
+# ================================================================
 
-def start_fixture_missing(
-    config=None
-):
-    """
-    Compatibility wrapper.
-    """
+def main():
+    config = load_config()
+    threads = []
+    stores = config.get("stores", {})
 
-    return run_fixture_missing(
-        config
-    )
+    if not stores:
+        raise RuntimeError("No stores configured")
 
+    for store_name, store in stores.items():
+        for camera in store.get("gates", []):
+            if not camera.get("fixture_missing", {}).get("enabled", True):
+                continue
 
-# ============================================================================
-# SCRIPT ENTRY
-# ============================================================================
+            thread = threading.Thread(
+                target=process_camera,
+                args=(store_name, store, camera, config),
+                daemon=True,
+                name=f"FixtureCamera-{camera.get('id')}",
+            )
+            thread.start()
+            threads.append(thread)
 
-if __name__ == "__main__":
+    logger.info("[Fixture] Started %d camera thread(s)", len(threads))
+
+    if not threads:
+        raise RuntimeError("No enabled fixture_missing cameras found")
 
     try:
-
-        configuration = load_config()
-
-        run_fixture_missing(
-            configuration
-        )
-
+        while True:
+            time.sleep(10)
     except KeyboardInterrupt:
+        logger.info("[Fixture] Stopped by user")
 
-        logger.info(
-            "[Fixture] Stopped by user."
-        )
 
-    except Exception as exc:
-
-        logger.exception(
-            "[Fixture] Fatal error: %s",
-            exc
-        )
+if __name__ == "__main__":
+    main()
