@@ -8,6 +8,14 @@
     960,
     1080
   ],
+  "SHOW_IMAGES": false,
+  "BATCH_THRESHOLD": 2,
+  "SKIP_FRAMES": 0,
+  "MAX_WORKERS": 2,
+  "IS_DELETE_IMAGE": false,
+  "POLL_INTERVAL": 1,
+  "START_TIME": "11:00",
+  "END_TIME": "21:59",
   "STAFF_SEGREGATION": true,
   "DATABASE": {
     "host": "localhost",
@@ -20,30 +28,43 @@
     "output_directory": "./var/data/aurify_captures"
   },
   "fixture_missing": {
-    "pixel_threshold": 40,
-    "change_percentage_threshold": 10.0,
-    "min_changed_pixels": 1000,
-    "required_change_frames": 1,
-    "blur_kernel_size": [
-      5,
-      5
-    ],
-    "roi_source_resolution": [
-      960,
-      1080
-    ],
-    "baseline_directory": "./var/data/fixture",
-    "snapshot_directory": "./var/data/fixture_missing_snapshots",
-    "daily_check_time": "13:00",
     "enabled": true,
     "api_endpoint": "/storescript/api/fixture-missing-event",
-    "person_model": "./models/yolo11s.pt",
-    "person_confidence": 0.5,
-    "person_mask_padding": 10,
+    "baseline_directory": "./var/data/fixture",
+    "snapshot_directory": "./var/data/fixture_missing_snapshots",
+    "pixel_comparison_max_width": 960,
+    "shift_threshold_percent": 0.25,
+    "rotation_threshold_degrees": 0.3,
+    "scale_threshold_percent": 0.8,
+    "min_registration_inliers": 10,
+    "orb_features": 4000,
+    "camera_angle_grid_size": 4,
+    "black_mean_threshold": 8,
+    "black_dark_pixel_ratio": 0.98,
+    "camera_blur_variance_drop_ratio": 0.5,
+    "camera_blur_minimum_original_variance": 0.01,
+    "confirmation_frames": 3,
+    "confirmation_interval_seconds": 1.0,
+    "capture_attempts": 5,
+    "warmup_frames": 5,
+    "force_recheck": false,
+    "invert_direction_labels": false,
     "rtsp_reconnect_delay_seconds": 5,
-    "poll_interval_seconds": 0.25,
     "max_api_retries": 5,
-    "api_retry_delay_seconds": 5
+    "api_retry_delay_seconds": 5,
+    "daily_check_time": "11:00",
+    "wait_for_check_time": true,
+    "ignore_check_time": false,
+    "feature_ratio_test": 0.8,
+    "ransac_reproj_threshold": 4.0,
+    "template_search_margins_percent": [
+      20,
+      35
+    ],
+    "template_min_score": 0.3,
+    "template_override_margin": 0.15,
+    "scene_similarity_threshold": 0.5,
+    "save_debug_images": true
   },
   "stores": {
     "P234": {
@@ -60,10 +81,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[20, 18], [943, 23], [931, 1036], [25, 1046]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -78,10 +96,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[16, 26], [943, 21], [945, 1058], [16, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -114,10 +129,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[15, 11], [940, 20], [953, 1045], [21, 1060]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -132,10 +144,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[11, 20], [938, 33], [950, 1063], [15, 1041]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -150,10 +159,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[5, 13], [918, 20], [935, 1061], [15, 1063]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -168,10 +174,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[13, 15], [948, 23], [946, 1055], [18, 1055]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -186,10 +189,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[13, 11], [933, 36], [933, 1046], [26, 1048]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -204,10 +204,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[15, 16], [948, 11], [950, 1056], [6, 1061]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -222,10 +219,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[20, 21], [941, 18], [946, 1068], [15, 1058]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -240,10 +234,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[15, 13], [938, 16], [943, 1061], [8, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -258,10 +249,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[13, 16], [941, 21], [945, 1058], [13, 1061]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -276,10 +264,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[11, 16], [928, 16], [941, 1040], [13, 1060]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -294,10 +279,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                [[13, 13], [948, 20], [928, 1066], [15, 1053]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -312,10 +294,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[15, 21], [938, 18], [936, 1051], [13, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -330,10 +309,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[11, 18], [946, 10], [943, 1058], [18, 1061]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -348,10 +324,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[15, 11], [941, 8], [940, 1068], [11, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -366,10 +339,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[6, 5], [930, 16], [951, 1065], [8, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -384,10 +354,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[15, 16], [940, 11], [946, 1058], [13, 1063]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -402,10 +369,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                [[16, 8], [938, 11], [945, 1065], [10, 1065]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -420,10 +384,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                [[11, 15], [950, 15], [943, 1065], [10, 1073]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -438,10 +399,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[8, 8], [941, 15], [955, 1056], [10, 1068]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -456,10 +414,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-               [[11, 11], [943, 10], [948, 1061], [15, 1065]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -474,10 +429,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[8, 15], [943, 21], [946, 1055], [8, 1073]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -492,10 +444,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                [[10, 11], [946, 16], [946, 1070], [15, 1068]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -510,10 +459,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-               [[10, 13], [951, 10], [948, 1055], [8, 1063]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -528,10 +474,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[15, 8], [948, 16], [953, 1068], [10, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -546,10 +489,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                [[8, 8], [950, 15], [946, 1063], [10, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -564,10 +504,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[10, 10], [948, 18], [953, 1060], [5, 1078]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -582,10 +519,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[8, 10], [948, 15], [953, 1070], [8, 1068]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -600,10 +534,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[6, 8], [955, 8], [951, 1070], [3, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -618,10 +549,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[6, 8], [948, 11], [955, 1063], [10, 1068]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -636,10 +564,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[10, 15], [955, 18], [945, 1065], [15, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -654,10 +579,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[6, 13], [951, 11], [951, 1068], [10, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -672,10 +594,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[10, 13], [953, 11], [946, 1063], [8, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -690,10 +609,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[11, 11], [951, 6], [948, 1068], [5, 1068]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -708,10 +624,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[3, 5], [945, 13], [955, 1070], [11, 1073]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -726,10 +639,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                 [[5, 10], [950, 8], [951, 1071], [5, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -744,10 +654,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[6, 10], [953, 8], [953, 1068], [8, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -762,10 +669,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[3, 6], [951, 10], [953, 1073], [8, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -780,10 +684,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[13, 10], [950, 13], [951, 1073], [10, 1068]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -798,10 +699,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[3, 13], [950, 6], [948, 1065], [11, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -816,10 +714,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[8, 8], [950, 13], [948, 1073], [6, 1075]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -834,10 +729,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[6, 8], [950, 5], [958, 1070], [6, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -852,10 +744,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[8, 10], [951, 8], [953, 1068], [16, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -870,10 +759,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[6, 6], [950, 8], [956, 1073], [6, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -888,10 +774,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[6, 10], [951, 13], [953, 1068], [3, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -906,10 +789,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[3, 8], [955, 8], [958, 1063], [10, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -924,10 +804,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[8, 18], [950, 11], [955, 1063], [11, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -942,10 +819,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[5, 8], [948, 13], [946, 1070], [13, 1066]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -960,10 +834,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                   [[8, 6], [950, 8], [955, 1070], [8, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -978,10 +849,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[8, 8], [955, 13], [951, 1071], [16, 1071]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
@@ -996,10 +864,7 @@
             "enabled": true,
             "regions": [
               {
-                "id": "fixture_region_1",
-                "polygon": [
-                  [[11, 13], [950, 16], [950, 1063], [8, 1070]]
-                ]
+                "id": "fixture_region_1"
               }
             ]
           }
