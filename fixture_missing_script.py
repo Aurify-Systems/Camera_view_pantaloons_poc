@@ -1,14 +1,14 @@
 """
-fixture_missing.py  (v4 - whole-frame, lighting-proof, run-once at 1 PM)
-=======================================================================
+fixture_missing.py  (v5 - whole-frame, lighting-proof, daily loop at 1 PM)
+=========================================================================
 
 PURPOSE
 -------
-Once a day (your scheduler starts it at 1 PM) compare every camera's
-current view with its ORIGINAL image and report whether the CAMERA ANGLE
+Runs continuously. Every day at/after 1 PM it compares every camera's
+current view with its ORIGINAL image and reports whether the CAMERA ANGLE
 changed: left, right, up, down, tilt, zoom, black, blur.
-The whole frame is used (no polygons). The script checks all cameras,
-prints a summary and EXITS.
+The whole frame is used (no polygons). After checking all cameras it
+prints a summary, then sleeps until 1 PM the next day and repeats.
 
 HOW ANGLE CHANGE IS DETECTED (all lighting-independent, whole frame)
 -------------------------------------------------------------------
@@ -32,16 +32,19 @@ HOW ANGLE CHANGE IS DETECTED (all lighting-independent, whole frame)
 A side-by-side debug image (original | current) is written to
 <baseline_dir>/<store>/<category>/<camera>/debug_latest.jpg every run.
 
-RUN-ONCE
---------
+DAILY LOOP
+----------
+ - The script never exits on its own (Ctrl+C to stop).
+ - Started before daily_check_time (default "13:00") -> waits until it.
+   Started after it -> runs the check immediately.
+ - After each daily pass it sleeps until the next day's daily_check_time.
+ - Config is reloaded every day, so edits apply without a restart.
  - Every run captures fresh frames and replaces today's current image.
  - No original yet -> it is created and that camera is skipped today.
  - Already checked today (marker file) -> skipped, unless
    "force_recheck": true.
- - The check runs at/after daily_check_time (default "13:00"):
-     started earlier -> it waits until 13:00; started later -> runs now.
-     "wait_for_check_time": false -> exit instead of waiting.
-     Testing: python fixture_missing.py --now   (or "ignore_check_time": true)
+ - Testing: python fixture_missing.py --now   (or "ignore_check_time": true)
+   runs one pass immediately, then continues the normal daily loop.
 
 movement_type sent to the API:
     left, right, up, down, zoom, tilt, black, blur,
@@ -72,6 +75,8 @@ CONFIG KEYS (config["fixture_missing"], per-camera block overrides)
     camera_blur_variance_drop_ratio     0.5
     camera_blur_minimum_original_variance 0.01
     -- run control --
+    daily_check_time                    "13:00"
+    ignore_check_time                   false
     confirmation_frames                 3
     confirmation_interval_seconds       1.0
     capture_attempts / warmup_frames / force_recheck / invert_direction_labels
@@ -89,7 +94,7 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -689,7 +694,7 @@ def load_or_create_baseline(camera_dir: Path, frame: np.ndarray) -> Tuple[np.nda
 
 
 def save_fresh_current(camera_dir: Path, frame: np.ndarray) -> Path:
-    """Run-once mode: every run stores a fresh current image (old ones removed)."""
+    """Every run stores a fresh current image (old ones removed)."""
     for old in camera_dir.glob("current_*.jpg"):
         try:
             old.unlink()
@@ -1037,7 +1042,7 @@ def process_camera(store_name: str, store: dict, camera: dict, config: dict) -> 
 
 
 # ================================================================
-# MAIN
+# SUMMARY
 # ================================================================
 
 def print_summary() -> int:
@@ -1058,52 +1063,43 @@ def print_summary() -> int:
     return failures
 
 
-def wait_for_check_time(config: dict) -> None:
-    """
-    Run the check at/after daily_check_time (default 13:00).
-      - already past the time  -> run immediately
-      - before the time        -> wait until it (wait_for_check_time=true, default)
-                                  or exit (wait_for_check_time=false)
-    Bypass for testing:  python fixture_missing.py --now   (or "ignore_check_time": true)
-    """
-    fx = config.get("fixture_missing", {})
-    if "--now" in sys.argv or bool(fx.get("ignore_check_time", False)):
-        logger.info("[Fixture] Check-time gate bypassed (--now / ignore_check_time)")
-        return
+# ================================================================
+# DAILY SCHEDULING HELPERS
+# ================================================================
 
-    check_time = str(fx.get("daily_check_time", "13:00"))
+def parse_check_time(config: dict) -> Tuple[int, int]:
+    """Read daily_check_time ("HH:MM", default 13:00) from config."""
+    check_time = str(config.get("fixture_missing", {}).get("daily_check_time", "13:00"))
     try:
         hour, minute = map(int, check_time.split(":"))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError
     except ValueError:
-        logger.error("[Fixture] Invalid daily_check_time=%r; using 11:00", check_time)
+        logger.error("[Fixture] Invalid daily_check_time=%r; using 13:00", check_time)
         hour, minute = 13, 0
-
-    now = datetime.now()
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if now >= target:
-        logger.info("[Fixture] It is %s (>= %02d:%02d) - running the daily check now", now.strftime("%H:%M:%S"), hour, minute)
-        return
-
-    if not bool(fx.get("wait_for_check_time", True)):
-        logger.info("[Fixture] It is %s, before %02d:%02d - exiting without checking", now.strftime("%H:%M:%S"), hour, minute)
-        sys.exit(0)
-
-    logger.info("[Fixture] It is %s, before %02d:%02d - waiting until then", now.strftime("%H:%M:%S"), hour, minute)
-    while datetime.now() < target:
-        time.sleep(min(30.0, max(1.0, (target - datetime.now()).total_seconds())))
-    logger.info("[Fixture] Check time reached - starting")
+    return hour, minute
 
 
-def main() -> int:
-    config = load_config()
-    wait_for_check_time(config)
+def sleep_until(target: datetime) -> None:
+    """Sleep in short steps until `target` (keeps Ctrl+C responsive)."""
+    while True:
+        remaining = (target - datetime.now()).total_seconds()
+        if remaining <= 0:
+            return
+        time.sleep(min(30.0, max(1.0, remaining)))
+
+
+# ================================================================
+# ONE FULL PASS OVER ALL CAMERAS
+# ================================================================
+
+def run_all_cameras(config: dict) -> int:
+    """Check every enabled camera once (in parallel threads). Returns number of failures."""
     stores = config.get("stores", {})
-
     if not stores:
         raise RuntimeError("No stores configured")
 
+    RESULTS.clear()
     threads: List[threading.Thread] = []
 
     for store_name, store in stores.items():
@@ -1125,16 +1121,60 @@ def main() -> int:
     if not threads:
         raise RuntimeError("No enabled fixture_missing cameras found")
 
+    for thread in threads:
+        thread.join()
+
+    failures = print_summary()
+    logger.info("[Fixture] All cameras checked for today.")
+    return failures
+
+
+# ================================================================
+# MAIN  (runs forever: one pass per day at/after daily_check_time)
+# ================================================================
+
+def main() -> int:
+    run_now = "--now" in sys.argv   # testing: first pass immediately, then normal daily loop
+
     try:
-        for thread in threads:
-            thread.join()
+        while True:
+            config = load_config()   # reloaded every day, so config edits apply without restart
+            fx = config.get("fixture_missing", {})
+            hour, minute = parse_check_time(config)
+
+            if run_now or bool(fx.get("ignore_check_time", False)):
+                logger.info("[Fixture] Check-time gate bypassed (--now / ignore_check_time)")
+                run_now = False
+            else:
+                now = datetime.now()
+                target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if now < target:
+                    logger.info(
+                        "[Fixture] It is %s - waiting until %02d:%02d",
+                        now.strftime("%H:%M:%S"), hour, minute,
+                    )
+                    sleep_until(target)
+                else:
+                    logger.info(
+                        "[Fixture] It is %s (>= %02d:%02d) - running the daily check now",
+                        now.strftime("%H:%M:%S"), hour, minute,
+                    )
+
+            try:
+                run_all_cameras(config)
+            except Exception:
+                logger.exception("[Fixture] Daily run failed; will try again tomorrow")
+
+            # sleep until tomorrow's check time, then loop
+            tomorrow = (datetime.now() + timedelta(days=1)).replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+            logger.info("[Fixture] Next check at %s", tomorrow.strftime("%Y-%m-%d %H:%M"))
+            sleep_until(tomorrow)
+
     except KeyboardInterrupt:
         logger.info("[Fixture] Stopped by user")
         return 130
-
-    failures = print_summary()
-    logger.info("[Fixture] All cameras checked. Exiting.")
-    return 1 if failures else 0
 
 
 if __name__ == "__main__":
