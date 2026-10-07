@@ -1071,7 +1071,7 @@ def wait_for_check_time(config: dict) -> None:
         logger.info("[Fixture] Check-time gate bypassed (--now / ignore_check_time)")
         return
 
-    check_time = str(fx.get("daily_check_time", "11:00"))
+    check_time = str(fx.get("daily_check_time", "13:00"))
     try:
         hour, minute = map(int, check_time.split(":"))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):

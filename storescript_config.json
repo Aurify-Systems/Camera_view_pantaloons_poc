@@ -52,7 +52,7 @@
     "rtsp_reconnect_delay_seconds": 5,
     "max_api_retries": 5,
     "api_retry_delay_seconds": 5,
-    "daily_check_time": "11:00",
+    "daily_check_time": "13:00",
     "wait_for_check_time": true,
     "ignore_check_time": false,
     "feature_ratio_test": 0.8,
@@ -64,7 +64,7 @@
     "template_min_score": 0.3,
     "template_override_margin": 0.15,
     "scene_similarity_threshold": 0.5,
-    "save_debug_images": true
+    "save_debug_images": false
   },
   "stores": {
     "P234": {
