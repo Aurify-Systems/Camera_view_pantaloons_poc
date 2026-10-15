@@ -1,5 +1,5 @@
 """
-fixture_missing.py  (v5 - whole-frame, lighting-proof, daily loop at 1 PM)
+fixture_missing.py  (v6 - whole-frame, lighting-proof, daily loop at 1 PM)
 =========================================================================
 
 PURPOSE
@@ -21,13 +21,21 @@ HOW ANGLE CHANGE IS DETECTED (all lighting-independent, whole frame)
    current one. Handles repetitive shelves, low-texture scenes and
    LARGE pans, and cross-checks the feature result.
 
-3. If NOTHING can be aligned and the scene no longer resembles the
+3. NOISE GUARD (v6):
+   - Hard noise floor in pixels / degrees / percent so sub-pixel
+     jitter from JPEG / sensor noise / RANSAC rounding never fires.
+   - Small moves (below small_move_max_percent) need at least TWO
+     independent signals (shift + rotation, or shift + scale, etc.)
+     to agree - a lone noisy signal is ignored.
+
+4. If NOTHING can be aligned and the scene no longer resembles the
    original (scene_similarity_threshold) -> "camera_change".
 
-4. BLACK frame (signal loss / covered lens) and BLUR (contrast-
+5. BLACK frame (signal loss / covered lens) and BLUR (contrast-
    normalised sharpness drop).
 
-5. CONFIRMATION: several frames, majority vote.
+6. CONFIRMATION: several frames. LARGE moves -> simple majority.
+   SMALL moves -> UNANIMOUS (a one-off noisy frame cannot trigger).
 
 A side-by-side debug image (original | current) is written to
 <baseline_dir>/<store>/<category>/<camera>/debug_latest.jpg every run.
@@ -54,14 +62,22 @@ Direction labels describe CAMERA movement; flip with
 
 CONFIG KEYS (config["fixture_missing"], per-camera block overrides)
 ===================================================================
-    -- registration --
-    shift_threshold_percent             0.25  % of width/height (~2.4 px @960)
-    rotation_threshold_degrees          0.3
-    scale_threshold_percent             0.8
-    min_registration_inliers            15
-    orb_features                        3000
+    -- registration (v6: eye-visible levels) --
+    shift_threshold_percent             1.5   % of width/height (~14 px @960)
+    rotation_threshold_degrees          1.2
+    scale_threshold_percent             2.0
+    min_registration_inliers            20
+    orb_features                        4000
+
+    -- noise guard (v6) --
+    noise_floor_shift_px                4.0   absolute minimum shift to count
+    noise_floor_rotation_deg            0.6
+    noise_floor_scale_pct               1.0
+    require_multi_signal_for_small_moves true
+    small_move_max_percent              3.0   below this = "small move"
+
     -- edge layout (lighting independent) --
-    edge_percentile                     92    gradient percentile kept as edge
+    edge_percentile                     92
     edge_match_tolerance_px             2
     edge_mismatch_global_percentage     25
     edge_mismatch_cell_percentage       30
@@ -69,15 +85,17 @@ CONFIG KEYS (config["fixture_missing"], per-camera block overrides)
     edge_mismatch_hard_percentage       40
     edge_min_cell_edge_pixels           40
     camera_angle_grid_size              4
+
     -- black / blur --
     black_mean_threshold                8
     black_dark_pixel_ratio              0.98
     camera_blur_variance_drop_ratio     0.5
     camera_blur_minimum_original_variance 0.01
+
     -- run control --
     daily_check_time                    "13:00"
     ignore_check_time                   false
-    confirmation_frames                 3
+    confirmation_frames                 5
     confirmation_interval_seconds       1.0
     capture_attempts / warmup_frames / force_recheck / invert_direction_labels
 
@@ -111,7 +129,6 @@ BASE_DIR = Path(__file__).resolve().parent
 
 _CONFIG_CANDIDATES = [
     os.environ.get("FIXTURE_CONFIG_FILE"),
-    "storescript_config copy.json",
     "storescript_config.json",
 ]
 
@@ -127,7 +144,7 @@ for _candidate in _CONFIG_CANDIDATES:
         break
 
 if CONFIG_FILE is None:
-    CONFIG_FILE = BASE_DIR / "storescript_config copy.json"
+    CONFIG_FILE = BASE_DIR /  "storescript_config.json"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -319,7 +336,6 @@ def extract_edges(gray: np.ndarray, settings: dict) -> np.ndarray:
 
     high = float(np.percentile(magnitude, percentile))
     high = max(high, 1.0)
-    # Canny works on 8-bit gradients; use its own Sobel with our thresholds
     return cv2.Canny(g, high * 0.5 / 4.0, high / 4.0)
 
 
@@ -354,7 +370,7 @@ def calculate_edge_mismatch(original_gray: np.ndarray, current_gray: np.ndarray,
             n_edges = int(np.count_nonzero(edges_a[y0:y1, x0:x1]))
             name = f"r{gy}c{gx}"
             if n_edges < min_edges:
-                grid_percentages[name] = -1.0  # not enough texture to judge
+                grid_percentages[name] = -1.0
                 continue
             valid_cells += 1
             n_match = int(np.count_nonzero(matched[y0:y1, x0:x1]))
@@ -385,7 +401,6 @@ def template_registration(original_gray: np.ndarray, current_gray: np.ndarray, s
     Translation search that needs NO keypoints: the centre of the original
     structure map is slid over the current one (normalised cross-correlation).
     Works on repetitive / low-texture shelves and for LARGE pans.
-    Returns shift (pixels @ working size), best score, score at zero shift.
     """
     h, w = original_gray.shape[:2]
     work_w = int(get_setting(settings, "template_work_width", default=640, cast=int))
@@ -465,7 +480,9 @@ def _fit_transform(kp_a, kp_b, good, w, h, min_inliers, ransac_thr):
 def feature_registration(original_gray: np.ndarray, current_gray: np.ndarray, settings: dict) -> Optional[Dict[str, Any]]:
     """SIFT first (best on repetitive scenes), ORB as backup. Relaxed ratio test, 4px RANSAC."""
     h, w = original_gray.shape[:2]
-    min_inliers = int(get_setting(settings, "min_registration_inliers", default=10, cast=int))
+    # === v6 CHANGE: default min_inliers raised 10 -> 20 ===
+    min_inliers = int(get_setting(settings, "min_registration_inliers", default=20, cast=int))
+    # === v6 CHANGE: default orb_features raised 4000 (already) ===
     n_features = int(get_setting(settings, "orb_features", default=4000, cast=int))
     ratio = float(get_setting(settings, "feature_ratio_test", default=0.8, cast=float))
     ransac_thr = float(get_setting(settings, "ransac_reproj_threshold", default=4.0, cast=float))
@@ -498,7 +515,8 @@ def estimate_registration(original_gray: np.ndarray, current_gray: np.ndarray, s
     Cascade: feature registration (gives shift+rotation+zoom) cross-checked
     by keypoint-free template matching (gives large/low-texture shifts).
     """
-    tm_min = float(get_setting(settings, "template_min_score", default=0.30, cast=float))
+    # === v6 CHANGE: template_min_score default 0.30 -> 0.35 ===
+    tm_min = float(get_setting(settings, "template_min_score", default=0.35, cast=float))
     cross_margin = float(get_setting(settings, "template_override_margin", default=0.15, cast=float))
 
     tm = template_registration(original_gray, current_gray, settings)
@@ -528,43 +546,81 @@ def estimate_registration(original_gray: np.ndarray, current_gray: np.ndarray, s
     return None, tm_info
 
 
+# ================================================================
+# === v6 CHANGE: classify_registration with noise guard + multi-signal rule ===
+# ================================================================
+
 def classify_registration(reg: Dict[str, Any], frame_w: int, frame_h: int, settings: dict) -> Tuple[str, List[str]]:
     """
     Returns (primary_movement, all_movements). 'none' when below thresholds.
-    Labels describe the CAMERA movement: if the scene shifts right in
-    the image, the camera turned left.
+
+    Guards against false positives from sub-pixel noise / JPEG artefacts:
+      1. Hard noise floor in pixels/degrees/percent - anything below is ignored.
+      2. Percentage threshold relative to frame size.
+      3. For SMALL moves (below small_move_max_percent), require at least
+         TWO independent signals (shift + rotation, or shift + scale, etc.)
+         to agree - a lone noisy signal is not enough.
     """
-    shift_pct = float(get_setting(settings, "shift_threshold_percent", default=0.25, cast=float))
-    rot_thr = float(get_setting(settings, "rotation_threshold_degrees", default=0.3, cast=float))
-    scale_thr = float(get_setting(settings, "scale_threshold_percent", default=0.8, cast=float))
+    # === v6 CHANGE: raised defaults ===
+    shift_pct = float(get_setting(settings, "shift_threshold_percent", default=1.5, cast=float))
+    rot_thr = float(get_setting(settings, "rotation_threshold_degrees", default=1.2, cast=float))
+    scale_thr = float(get_setting(settings, "scale_threshold_percent", default=2.0, cast=float))
     invert = bool(get_setting(settings, "invert_direction_labels", default=False))
 
-    thr_x = frame_w * shift_pct / 100.0
-    thr_y = frame_h * shift_pct / 100.0
+    # === v6 CHANGE: noise floors ===
+    noise_shift_px = float(get_setting(settings, "noise_floor_shift_px", default=4.0, cast=float))
+    noise_rot_deg = float(get_setting(settings, "noise_floor_rotation_deg", default=0.6, cast=float))
+    noise_scale = float(get_setting(settings, "noise_floor_scale_pct", default=1.0, cast=float))
 
-    candidates: List[Tuple[float, str]] = []
+    require_multi = bool(get_setting(settings, "require_multi_signal_for_small_moves", default=True))
+    small_max_pct = float(get_setting(settings, "small_move_max_percent", default=3.0, cast=float))
+
+    # Absolute thresholds = the larger of percentage-of-frame and hard noise floor
+    thr_x = max(frame_w * shift_pct / 100.0, noise_shift_px)
+    thr_y = max(frame_h * shift_pct / 100.0, noise_shift_px)
+    rot_thr = max(rot_thr, noise_rot_deg)
+    scale_thr = max(scale_thr, noise_scale)
 
     sx, sy = reg["shift_x"], reg["shift_y"]
+    rot = reg["rotation_deg"]
+    scale = reg["scale_pct"]
+
+    signals: List[Tuple[float, str]] = []  # (magnitude_ratio, label)
+
     if abs(sx) >= thr_x:
         label = "left" if sx > 0 else "right"
         if invert:
             label = "right" if label == "left" else "left"
-        candidates.append((abs(sx) / thr_x, label))
+        signals.append((abs(sx) / thr_x, label))
+
     if abs(sy) >= thr_y:
         label = "up" if sy > 0 else "down"
         if invert:
             label = "down" if label == "up" else "up"
-        candidates.append((abs(sy) / thr_y, label))
-    if abs(reg["rotation_deg"]) >= rot_thr:
-        candidates.append((abs(reg["rotation_deg"]) / rot_thr, "tilt"))
-    if abs(reg["scale_pct"]) >= scale_thr:
-        candidates.append((abs(reg["scale_pct"]) / scale_thr, "zoom"))
+        signals.append((abs(sy) / thr_y, label))
 
-    if not candidates:
+    if abs(rot) >= rot_thr:
+        signals.append((abs(rot) / rot_thr, "tilt"))
+
+    if abs(scale) >= scale_thr:
+        signals.append((abs(scale) / scale_thr, "zoom"))
+
+    if not signals:
         return "none", []
 
-    candidates.sort(reverse=True)
-    return candidates[0][1], [name for _, name in candidates]
+    # Largest shift as percent of frame - used for the "small move" rule
+    shift_pct_actual = max(abs(sx) / frame_w, abs(sy) / frame_h) * 100.0
+
+    # For SMALL moves: require 2+ independent signal types to agree
+    if require_multi and shift_pct_actual < small_max_pct and len(signals) < 2:
+        logger.info(
+            "[Fixture Registration] Small shift %.2f%% (below %.2f%%) with only one signal -> ignored as noise",
+            shift_pct_actual, small_max_pct,
+        )
+        return "none", []
+
+    signals.sort(reverse=True)
+    return signals[0][1], [name for _, name in signals]
 
 
 # ================================================================
@@ -582,11 +638,22 @@ def detect_camera_angle_change(original: np.ndarray, current: np.ndarray, settin
     blur_info = detect_blur_event(original_gray, current_gray, settings)
     registration, tm_info = estimate_registration(original_gray, current_gray, settings)
 
+    # === v6 CHANGE: log raw magnitude so thresholds can be tuned ===
+    if registration is not None:
+        shift_mag = max(abs(registration["shift_x"]), abs(registration["shift_y"]))
+        shift_pct_mag = max(abs(registration["shift_x"]) / width,
+                            abs(registration["shift_y"]) / height) * 100.0
+        logger.info(
+            "[Fixture Magnitude] |shift|=%.2fpx (%.2f%%) | rot=%.3fdeg | scale=%.3f%%",
+            shift_mag, shift_pct_mag, registration["rotation_deg"], registration["scale_pct"],
+        )
+
     mismatch_pct, grid_percentages, changed_cells, valid_cells = calculate_edge_mismatch(
         original_gray, current_gray, settings
     )  # diagnostic only
 
-    similarity_threshold = float(get_setting(settings, "scene_similarity_threshold", default=0.5, cast=float))
+    # === v6 CHANGE: scene_similarity_threshold default 0.5 -> 0.45 ===
+    similarity_threshold = float(get_setting(settings, "scene_similarity_threshold", default=0.45, cast=float))
 
     reg_movement, reg_all = ("none", [])
     if registration is not None:
@@ -637,34 +704,79 @@ def detect_camera_angle_change(original: np.ndarray, current: np.ndarray, settin
         "template": tm_info,
         "blur": blur_info,
         "black": black_info,
+        "frame_width": width,    # === v6 CHANGE: keep frame size for downstream voting ===
+        "frame_height": height,  # === v6 CHANGE ===
     }
 
 
+# ================================================================
+# === v6 CHANGE: detect_with_confirmation - unanimity for small moves ===
+# ================================================================
+
 def detect_with_confirmation(original: np.ndarray, frames: List[np.ndarray], settings: dict) -> Dict[str, Any]:
-    """Run detection on every captured frame; report a change only if the majority agree."""
+    """
+    Run detection on every captured frame.
+
+    Voting rules:
+      - For LARGE changes (> small_move_max_percent): simple majority.
+      - For SMALL changes (<= small_move_max_percent): ALL frames must agree,
+        otherwise the change is treated as noise.
+    """
     results = []
     for index, frame in enumerate(frames, start=1):
         logger.info("[Fixture] Analysing frame %d/%d", index, len(frames))
         results.append(detect_camera_angle_change(original, frame, settings))
 
-    votes = sum(1 for r in results if r["camera_angle_changed"])
-    needed = len(results) // 2 + 1
+    small_max_pct = float(get_setting(settings, "small_move_max_percent", default=3.0, cast=float))
+
+    changed_results = [r for r in results if r["camera_angle_changed"]]
+
+    # Determine per-frame shift magnitude (for small-move rule)
+    def shift_pct_of(r: Dict[str, Any]) -> float:
+        reg = r.get("registration") or {}
+        tm = r.get("template") or {}
+        sx = abs(reg.get("shift_x", tm.get("shift_x", 0.0)))
+        sy = abs(reg.get("shift_y", tm.get("shift_y", 0.0)))
+        fw = float(r.get("frame_width") or 960)
+        fh = float(r.get("frame_height") or 540)
+        return max(sx / fw, sy / fh) * 100.0
+
+    small_move = all(shift_pct_of(r) <= small_max_pct for r in changed_results) if changed_results else True
+
+    if changed_results and small_move:
+        # Small move: require unanimity across ALL frames
+        needed = len(results)
+    else:
+        # Large move: simple majority
+        needed = len(results) // 2 + 1
+
+    votes = len(changed_results)
 
     if votes >= needed:
-        kinds = [r["movement_type"] for r in results if r["camera_angle_changed"]]
+        kinds = [r["movement_type"] for r in changed_results]
         best = max(set(kinds), key=kinds.count)
-        chosen = next(r for r in results if r["movement_type"] == best)
+        chosen = next(r for r in changed_results if r["movement_type"] == best)
     else:
         chosen = next((r for r in results if not r["camera_angle_changed"]), results[0])
         chosen = dict(chosen)
         chosen["camera_angle_changed"] = False
         chosen["movement_type"] = "none"
         chosen["status"] = "NO_CHANGE"
-        chosen["reason"] = "stable_camera" if votes == 0 else "change_not_confirmed_across_frames"
+        if votes == 0:
+            chosen["reason"] = "stable_camera"
+        elif small_move:
+            chosen["reason"] = "small_change_not_confirmed_across_all_frames"
+        else:
+            chosen["reason"] = "change_not_confirmed_across_frames"
 
     chosen = dict(chosen)
     chosen["votes"] = f"{votes}/{len(results)}"
-    logger.info("[Fixture] Confirmation votes: %s changed (need %d) -> %s", chosen["votes"], needed, chosen["movement_type"])
+    chosen["required_votes"] = f"{needed}/{len(results)}"
+    chosen["small_move"] = small_move
+    logger.info(
+        "[Fixture] Confirmation votes: %s changed (need %s, small_move=%s) -> %s",
+        chosen["votes"], chosen["required_votes"], small_move, chosen["movement_type"],
+    )
     return chosen
 
 
@@ -921,7 +1033,8 @@ def process_camera(store_name: str, store: dict, camera: dict, config: dict) -> 
     capture_attempts = int(merged_settings.get("capture_attempts", 5))
     warmup_frames = int(merged_settings.get("warmup_frames", 5))
     force_recheck = bool(merged_settings.get("force_recheck", False))
-    confirmation_frames = max(1, int(merged_settings.get("confirmation_frames", 3)))
+    # === v6 CHANGE: default confirmation_frames 3 -> 5 ===
+    confirmation_frames = max(1, int(merged_settings.get("confirmation_frames", 5)))
     confirmation_interval = float(merged_settings.get("confirmation_interval_seconds", 1.0))
     api_url = build_api_url(config)
 
